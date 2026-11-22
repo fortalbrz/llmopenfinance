@@ -1,13 +1,17 @@
 """Tests for the tool registry (validation, execution, error handling, rendering)."""
 
 import json
+import os
 import re
+import subprocess  # ruff: ignore[suspicious-subprocess-import] — runs our own interpreter on a literal snippet
+import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from llmopenfinance import analytics
+from llmopenfinance import analytics, tools as tools_module
 from llmopenfinance.constants import TOOL_ROW_LIMIT
 from llmopenfinance.tools import (
     BASE_TOOLS,
@@ -261,9 +265,58 @@ def test_run_sql_description_en_embeds_row_limit_and_schema(use_language: Callab
     assert f"Maximum {TOOL_ROW_LIMIT} rows.\n{sql_schema_doc()}" in description
 
 
-def test_module_level_tools_match_the_builders():
+def test_module_level_tools_keep_their_shape():
+    """``from llmopenfinance.tools import BASE_TOOLS, SQL_TOOL`` still works (served by a module ``__getattr__``)."""
+    assert isinstance(BASE_TOOLS, tuple)
+    assert all(isinstance(spec, ToolSpec) for spec in BASE_TOOLS)
     assert [spec.name for spec in BASE_TOOLS] == [spec.name for spec in build_base_tools()]
+    assert isinstance(SQL_TOOL, ToolSpec)
     assert SQL_TOOL.name == "run_sql"
+
+
+def test_module_level_tools_follow_the_current_language(use_language: Callable[[str], None]):
+    """Regression: the attributes were frozen at import, so they went stale after a language change."""
+    assert tools_module.BASE_TOOLS[0].description.startswith("Lista contas bancárias")
+    assert tools_module.SQL_TOOL.description.startswith("Executa UMA consulta SELECT")
+    use_language("en")
+    assert tools_module.BASE_TOOLS[0].description.startswith("Lists bank accounts and cards")
+    assert tools_module.SQL_TOOL.description.startswith("Runs ONE read-only SELECT query")
+    assert [spec.description for spec in tools_module.BASE_TOOLS] == [spec.description for spec in build_base_tools()]
+
+
+@pytest.mark.parametrize("name", ["NOPE", "base_tools", "sql_tool"])
+def test_module_getattr_rejects_unknown_names(name: str):
+    with pytest.raises(AttributeError, match=f"module 'llmopenfinance.tools' has no attribute '{name}'"):
+        getattr(tools_module, name)
+    assert not hasattr(tools_module, name)
+
+
+def _run_python(code: str, tmp_path: Path, **env: str) -> subprocess.CompletedProcess[str]:
+    """Run ``python -I -c code`` from an empty directory so only the installed package can be imported."""
+    return subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true] — fixed argv, no shell
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
+        env={**os.environ, **env},
+        check=False,
+    )
+
+
+def test_importing_tools_agent_chat_never_resolves_the_language(tmp_path: Path):
+    """Regression: an invalid ``LLMOPENFINANCE_LANG`` made ``import tools`` (and so ``agent``/``chat``) raise."""
+    control = _run_python(
+        "from llmopenfinance.i18n import get_language; get_language()", tmp_path, LLMOPENFINANCE_LANG="fr"
+    )
+    assert control.returncode != 0, "control: 'fr' must be rejected when the language is actually resolved"
+    assert "ValueError" in control.stderr
+
+    imported = _run_python(
+        "import llmopenfinance.tools, llmopenfinance.agent, llmopenfinance.chat", tmp_path, LLMOPENFINANCE_LANG="fr"
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert "Traceback" not in imported.stderr
 
 
 def test_registry_uses_current_language(con, use_language: Callable[[str], None]):

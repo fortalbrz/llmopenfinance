@@ -4,6 +4,8 @@ One registry renders the same specs for both providers (Anthropic ``input_schema
 ``function.parameters``). :meth:`ToolRegistry.run` never raises: invalid arguments and handler
 errors come back as ``is_error`` results with an actionable message so the model can self-correct.
 Tool descriptions are static (stable prompt-cache prefix); results are compact JSON, row-capped.
+Descriptions follow the process language: :func:`build_base_tools` and :func:`build_sql_tool` build them on
+demand, and ``BASE_TOOLS`` / ``SQL_TOOL`` are module attributes resolved on access, never at import.
 """
 
 from __future__ import annotations
@@ -354,8 +356,27 @@ def build_sql_tool() -> ToolSpec:
     )
 
 
-BASE_TOOLS: tuple[ToolSpec, ...] = build_base_tools()
-SQL_TOOL = build_sql_tool()
+def __getattr__(name: str) -> Any:
+    """Serve ``BASE_TOOLS`` and ``SQL_TOOL`` (PEP 562), built fresh on every access.
+
+    They are not assigned at import: building them calls :func:`~llmopenfinance.i18n.t`, which resolves the
+    language, so an invalid ``LLMOPENFINANCE_LANG`` would raise when ``tools`` (and ``agent``, ``chat``) is
+    imported. Building on access also means they can never be stale after a language change.
+
+    Args:
+        name: Attribute looked up on the module.
+
+    Returns:
+        Any: ``tuple[ToolSpec, ...]`` for ``BASE_TOOLS``, a :class:`ToolSpec` for ``SQL_TOOL``.
+
+    Raises:
+        AttributeError: For any other name.
+    """
+    if name == "BASE_TOOLS":
+        return build_base_tools()
+    if name == "SQL_TOOL":
+        return build_sql_tool()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ToolRegistry:
