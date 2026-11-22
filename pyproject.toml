@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmopenfinance"
+version = "0.1.0"
+description = "Console chat with an LLM financial assistant over your Open Finance (Pluggy) data"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Jorge Albuquerque" }]
+license = { text = "MIT" }
+keywords = ["open finance", "pluggy", "llm", "ollama", "claude", "duckdb", "personal finance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "duckdb>=2.0.1",
+    "httpx>=0.28.1",
+    "ollama>=0.6.3",
+    "typer>=0.29.2",
+]
+
+[project.scripts]
+llmopenfinance = "llmopenfinance.__main__:main"
+finassist = "llmopenfinance.__main__:main"
+
+[tool.setuptools]
+packages = ["llmopenfinance"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --strict-markers --cov=src/llmopenfinance --cov-report=term-missing --cov-fail-under=90"
+markers = [
+    "slow: marks tests as slow",
+    "live: hits real external services (Pluggy / Claude / Ollama); deselected by default",
+]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.pyrefly]
+project-includes = ["src/**/*.py", "tests/**/*.py"]
+search-path = ["src", "."]
+
+[dependency-groups]
+dev = [
+    "pyrefly>=1.5.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.6",
+]
