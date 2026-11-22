@@ -29,4 +29,74 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "prompt.today": "Data de hoje: {date}.",
     "agent.stop.max_tokens": "Resposta interrompida pelo limite de tokens.",
     "agent.stop.refusal": "O modelo se recusou a responder esta pergunta.",
+    "enum.frequency.monthly": "mensal",
+    "enum.frequency.annual": "anual",
+    "enum.frequency.weekly": "semanal",
+    "enum.frequency.irregular": "irregular",
+    "enum.confidence.high": "alta",
+    "enum.confidence.medium": "média",
+    "enum.confidence.low": "baixa",
+    "tool.truncated": '…"[resultado truncado — refine os filtros]"',
+    "tool.repeated_note": "[Você já chamou esta ferramenta com os mesmos argumentos; use o resultado abaixo.] ",
+    "tool.error.unknown": "Ferramenta desconhecida '{name}'. Use: {names}",
+    "tool.error.invalid_arguments": "Argumentos inválidos: {error}",
+    "tool.error.run_failed": "Erro ao executar {name}: {error}",
+    "tool.error.missing_arguments": "argumentos obrigatórios ausentes: {missing}",
+    "tool.error.must_be_type": "'{name}' deve ser {expected}",
+    "tool.error.must_be_one_of": "'{name}' deve ser um de {options}",
+    "tool.error.bad_date": "'{name}' deve estar no formato AAAA-MM-DD",
+    "tool.error.out_of_range": "'{name}' fora do intervalo ({bound} {limit})",
+    "tool.param.months": "Quantidade de meses (inclui o atual).",
+    "tool.get_accounts.description": (
+        "Lista contas bancárias e cartões com saldo, limite, vencimento e status da conexão. "
+        "Use para perguntas sobre saldo, limite disponível ou quais contas existem."
+    ),
+    "tool.spending_by_category.description": (
+        "Gasto líquido mensal (despesas menos estornos) por categoria. Use para 'quanto gasto com X por mês', "
+        "ex.: categoria 'Compras online', 'Delivery de comida', 'Streaming'. Sem categoria retorna todas."
+    ),
+    "tool.spending_by_category.category": "Trecho do nome da categoria (pt-BR ou inglês).",
+    "tool.query_transactions.description": (
+        "Busca lançamentos individuais com filtros e devolve também contagem e somas de TODOS os que casam. "
+        "Use para detalhar gastos, procurar um estabelecimento (search) ou verificar valores."
+    ),
+    "tool.query_transactions.date": "AAAA-MM-DD inclusive.",
+    "tool.query_transactions.category": "Trecho do nome da categoria.",
+    "tool.query_transactions.search": "Trecho da descrição/estabelecimento, ex.: 'amazon'.",
+    "tool.detect_subscriptions.description": (
+        "Detecta assinaturas e cobranças recorrentes (streaming, apps, telefonia, academia, seguros...) com valor "
+        "médio, frequência, última cobrança e custo mensal/anual estimado. Use para 'quais assinaturas eu tenho'."
+    ),
+    "tool.detect_subscriptions.inactive": "Incluir as que parecem canceladas.",
+    "tool.cashflow_summary.description": (
+        "Receitas, gastos, investimento líquido, saldo e taxa de poupança por mês. "
+        "Use para avaliar a saúde financeira e sugerir melhorias."
+    ),
+    "tool.top_merchants.description": "Estabelecimentos/favorecidos com maior gasto no período.",
+    "tool.credit_card_bills.description": (
+        "Faturas de cartão de crédito recentes (valor total, vencimento, pagamento mínimo)."
+    ),
+    "tool.get_investments.description": "Posições de investimento, total por tipo, rentabilidade e vencimentos.",
+    "tool.get_loans.description": (
+        "Empréstimos e financiamentos: saldo devedor, parcelas pagas/restantes, valor da parcela e CET."
+    ),
+    "tool.run_sql.description": (
+        "Executa UMA consulta SELECT (DuckDB) somente leitura quando as outras ferramentas não bastam. "
+        "Máximo {limit} linhas.\n{schema}"
+    ),
+    "tool.run_sql.sql": "Uma única instrução SELECT.",
+    "tool.sql_schema": """Views/tabelas (DuckDB, somente leitura):
+- v_transactions(id, date DATE, month 'AAAA-MM', description, merchant, merchant_key, category (pt-BR local),
+  category_pluggy, kind ['expense','refund','income','transfer','investment'], flow DOUBLE (negativo = saída),
+  spend DOUBLE (gasto líquido: despesas positivas, estornos negativos, 0 para outros), currency_code, type
+  ['DEBIT','CREDIT'], status, payment_method, installment_number, total_installments, account_id, account_name,
+  account_type ['BANK','CREDIT'], account_subtype, item_id)
+- accounts(id, item_id, type, subtype, name, marketing_name, number, balance, currency_code, credit_limit,
+  available_credit_limit, balance_close_date, balance_due_date, minimum_payment)
+- bills(id, account_id, due_date, closing_date, total_amount, currency_code, minimum_payment_amount)
+- investments(id, item_id, name, type, subtype, balance, amount_profit, currency_code, annual_rate,
+  last_twelve_months_rate, due_date, issuer, status)
+- loans(id, item_id, product_name, type, contract_amount, outstanding_balance, currency_code, total_installments,
+  paid_installments, due_installments, installment_amount, due_date, cet)
+- items(id, connector_name, status, execution_status, last_updated_at, consent_expires_at, synced_at)""",
 }

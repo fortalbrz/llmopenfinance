@@ -26,7 +26,7 @@ import duckdb
 
 from llmopenfinance.categorize import SUBSCRIPTION_CATEGORIES, strip_accents
 from llmopenfinance.constants import BRT, SQL_TIMEOUT_SECONDS, TOOL_ROW_LIMIT
-from llmopenfinance.i18n import get_language
+from llmopenfinance.i18n import get_language, t
 
 Record = dict[str, Any]
 
@@ -545,6 +545,39 @@ def detect_subscriptions(
         "monthly_total": round(sum(r["monthly_estimate"] for r in active), 2),
         "annual_total": round(sum(r["annual_estimate"] for r in active), 2),
     }
+
+
+def localize_subscriptions(detected: dict[str, Any]) -> dict[str, Any]:
+    """Show the frequency and confidence of detected subscriptions in the process language.
+
+    :func:`find_recurring` keeps returning the canonical codes (``mensal``/``anual``/``semanal``/``irregular`` and
+    ``alta``/``média``/``baixa``); this maps them to display labels at the output edge. Unknown codes pass through
+    unchanged. The input is never mutated.
+
+    Args:
+        detected: Result of :func:`detect_subscriptions`.
+
+    Returns:
+        dict[str, Any]: A copy whose ``subscriptions`` rows carry the localised ``frequency`` and ``confidence``.
+    """
+    labels = {
+        "frequency": {
+            "mensal": t("enum.frequency.monthly"),
+            "anual": t("enum.frequency.annual"),
+            "semanal": t("enum.frequency.weekly"),
+            "irregular": t("enum.frequency.irregular"),
+        },
+        "confidence": {
+            "alta": t("enum.confidence.high"),
+            "média": t("enum.confidence.medium"),
+            "baixa": t("enum.confidence.low"),
+        },
+    }
+    rows = [
+        {**row, **{field: names.get(row[field], row[field]) for field, names in labels.items() if field in row}}
+        for row in detected["subscriptions"]
+    ]
+    return {**detected, "subscriptions": rows}
 
 
 # ---------------------------------------------------------------------------

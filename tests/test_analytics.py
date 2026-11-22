@@ -1,5 +1,6 @@
 """Tests for deterministic analytics over the synthetic dataset."""
 
+import copy
 from datetime import date
 
 import duckdb
@@ -268,3 +269,67 @@ def test_build_snapshot_empty_db_and_attention():
     assert "nenhuma conta sincronizada" in text
     assert "Banco: LOGIN_ERROR" in text
     store.close()
+
+
+def _detected() -> dict:
+    """A ``detect_subscriptions``-shaped payload covering every internal frequency and confidence code."""
+    rows = [
+        {"name": "Netflix", "frequency": "mensal", "confidence": "alta", "monthly_estimate": 55.9},
+        {"name": "Seguro", "frequency": "anual", "confidence": "média", "monthly_estimate": 100.0},
+        {"name": "Feira", "frequency": "semanal", "confidence": "baixa", "monthly_estimate": 216.67},
+        {"name": "Nuvem", "frequency": "irregular", "confidence": "média", "monthly_estimate": 19.8},
+    ]
+    return {"subscriptions": rows, "monthly_total": 392.37, "annual_total": 4708.44}
+
+
+def test_localize_subscriptions_pt_is_identity():
+    detected = _detected()
+    result = analytics.localize_subscriptions(detected)
+    assert result == detected
+    assert result is not detected
+    assert result["subscriptions"] is not detected["subscriptions"]
+
+
+def test_localize_subscriptions_en_maps_codes_without_mutating_input(use_language):
+    use_language("en")
+    detected = _detected()
+    before = copy.deepcopy(detected)
+    result = analytics.localize_subscriptions(detected)
+    assert [(r["frequency"], r["confidence"]) for r in result["subscriptions"]] == [
+        ("monthly", "high"),
+        ("annual", "medium"),
+        ("weekly", "low"),
+        ("irregular", "medium"),
+    ]
+    # Everything else is carried over untouched; only the two label fields change.
+    assert result["monthly_total"] == pytest.approx(392.37)
+    assert result["annual_total"] == pytest.approx(4708.44)
+    assert [(r["name"], r["monthly_estimate"]) for r in result["subscriptions"]] == [
+        (r["name"], r["monthly_estimate"]) for r in before["subscriptions"]
+    ]
+    assert detected == before
+    assert detected["subscriptions"][0]["frequency"] == "mensal"
+
+
+def test_localize_subscriptions_unknown_codes_and_missing_fields_pass_through(use_language):
+    use_language("en")
+    detected = {"subscriptions": [{"name": "X", "frequency": "quinzenal", "confidence": "?"}, {"name": "Y"}]}
+    result = analytics.localize_subscriptions(detected)
+    assert result["subscriptions"] == [{"name": "X", "frequency": "quinzenal", "confidence": "?"}, {"name": "Y"}]
+
+
+def test_localize_subscriptions_empty(use_language):
+    use_language("en")
+    assert analytics.localize_subscriptions({"subscriptions": []}) == {"subscriptions": []}
+
+
+def test_detect_subscriptions_internal_codes_stay_portuguese_in_en(con, use_language):
+    """Localising is an output-edge step: the detector keeps returning the canonical codes."""
+    use_language("en")
+    result = analytics.detect_subscriptions(con, today=TODAY)
+    names = {s["merchant_key"]: s for s in result["subscriptions"]}
+    assert names["netflix com"]["frequency"] == "mensal"
+    assert names["netflix com"]["confidence"] == "alta"
+    localized = analytics.localize_subscriptions(result)
+    shown = {s["merchant_key"]: s for s in localized["subscriptions"]}
+    assert (shown["netflix com"]["frequency"], shown["netflix com"]["confidence"]) == ("monthly", "high")
