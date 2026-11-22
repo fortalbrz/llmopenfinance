@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from llmopenfinance.constants import ENV_LANG
+from llmopenfinance.i18n import reset_language
 from llmopenfinance.store import FinanceStore, transaction_row
 
 TODAY = date(2026, 11, 22)
@@ -308,3 +310,22 @@ def ro_store(db_path: Path) -> Iterator[FinanceStore]:
 @pytest.fixture
 def con(ro_store: FinanceStore) -> Any:
     return ro_store.con
+
+
+@pytest.fixture(autouse=True)
+def _pin_language(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Freeze pt-BR for every test, ignoring the caller's environment, and unfreeze afterwards."""
+    monkeypatch.delenv(ENV_LANG, raising=False)
+    reset_language("pt-BR")
+    yield
+    reset_language()
+
+
+@pytest.fixture
+def use_language() -> Callable[[str], None]:
+    """Return ``use(code)``, which switches the frozen language for the current test."""
+
+    def use(code: str) -> None:
+        reset_language(code)
+
+    return use

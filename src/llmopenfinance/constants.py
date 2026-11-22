@@ -32,7 +32,12 @@ ENV_PLUGGY_CLIENT_SECRET = "PLUGGY_PASSWORD"
 ENV_PLUGGY_ITEM_IDS = "PLUGGY_ITEM_IDS"
 ENV_DB_PATH = "LLMOPENFINANCE_DB"
 ENV_PROVIDER = "LLMOPENFINANCE_PROVIDER"
+ENV_LANG = "LLMOPENFINANCE_LANG"
 ENV_ANTHROPIC_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_TOKEN")
+
+# --- Language ----------------------------------------------------------------
+DEFAULT_LANGUAGE = "pt-BR"
+SUPPORTED_LANGUAGES = ("pt-BR", "en")
 
 # --- Local storage -----------------------------------------------------------
 DEFAULT_DB_PATH = Path.home() / ".llmopenfinance" / "finance.duckdb"
