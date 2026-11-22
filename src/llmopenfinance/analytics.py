@@ -26,6 +26,7 @@ import duckdb
 
 from llmopenfinance.categorize import SUBSCRIPTION_CATEGORIES, strip_accents
 from llmopenfinance.constants import BRT, SQL_TIMEOUT_SECONDS, TOOL_ROW_LIMIT
+from llmopenfinance.i18n import get_language
 
 Record = dict[str, Any]
 
@@ -50,7 +51,9 @@ def today_brt() -> date:
 
 
 def brl(value: float | None) -> str:
-    """Format a number as Brazilian Real, e.g. ``R$ 1.234,56``.
+    """Format a number as Brazilian Real, following the process language.
+
+    pt-BR uses ``.`` for thousands and ``,`` for decimals (``R$ 1.234,56``); English swaps them (``R$ 1,234.56``).
 
     Args:
         value: Amount (``None`` renders as ``"—"``).
@@ -60,7 +63,9 @@ def brl(value: float | None) -> str:
     """
     if value is None:
         return "—"
-    text = f"{abs(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    text = f"{abs(value):,.2f}"
+    if get_language() == "pt-BR":
+        text = text.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"-R$ {text}" if value < 0 else f"R$ {text}"
 
 

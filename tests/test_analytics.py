@@ -18,6 +18,13 @@ def test_brl(value, expected):
     assert brl(value) == expected
 
 
+def test_brl_en(use_language):
+    use_language("en")
+    assert brl(1234.5) == "R$ 1,234.50"
+    assert brl(-1234.5) == "-R$ 1,234.50"
+    assert brl(None) == "—"
+
+
 @pytest.mark.parametrize(
     ("months_back", "expected"),
     [(0, date(2026, 11, 1)), (1, date(2026, 10, 1)), (11, date(2025, 12, 1)), (23, date(2024, 12, 1))],
