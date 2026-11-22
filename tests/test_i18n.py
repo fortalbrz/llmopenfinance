@@ -48,9 +48,9 @@ def test_normalize_rejects_unknown(raw):
     assert "pt-BR, en" in message
 
 
-def test_catalogs_start_empty():
-    assert messages_pt.MESSAGES == {}
-    assert messages_en.MESSAGES == {}
+def test_production_catalogs_have_no_test_keys():
+    for catalog in (messages_pt.MESSAGES, messages_en.MESSAGES):
+        assert not [key for key in catalog if key.startswith("i18n.test.")]
 
 
 @pytest.mark.parametrize(
@@ -169,6 +169,31 @@ def test_t_malformed_template_returns_template(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=I18N_LOGGER):
         assert t("i18n.test.bad", name="Ana") == "Olá, {name"
     assert len(_warnings(caplog, "i18n.test.bad")) == 1
+
+
+@pytest.mark.parametrize(
+    ("template", "values"),
+    [
+        ("Total {n:.2f}", {"n": None}),
+        ("Total {n:d}", {"n": None}),
+        ("Total {n[x]}", {"n": "abc"}),
+        ("Total {n.x}", {"n": "abc"}),
+        ("Total {0}", {}),
+    ],
+)
+def test_t_unformattable_template_returns_template(monkeypatch, caplog, template, values):
+    monkeypatch.setitem(messages_pt.MESSAGES, "i18n.test.fmt", template)
+    with caplog.at_level(logging.WARNING, logger=I18N_LOGGER):
+        assert t("i18n.test.fmt", **values) == template
+        assert t("i18n.test.fmt", **values) == template
+    assert len(_warnings(caplog, "i18n.test.fmt")) == 1
+
+
+def test_t_raises_only_for_invalid_language_env(monkeypatch):
+    reset_language()
+    monkeypatch.setenv(ENV_LANG, "fr")
+    with pytest.raises(ValueError, match="supported"):
+        t("i18n.test.anything")
 
 
 def test_t_escaped_braces_are_formatted(monkeypatch):

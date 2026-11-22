@@ -115,8 +115,11 @@ def t(key: str, **values: object) -> str:
     """Translate ``key`` into the process language and fill its ``{name}`` placeholders.
 
     A key missing from the active catalog falls back to the pt-BR text; a key missing everywhere returns the
-    key itself; a template that cannot be formatted with ``values`` is returned unformatted. Each problem is
-    logged once per key and never raises.
+    key itself; a template that cannot be formatted with ``values`` (missing placeholder, malformed template,
+    or a value its format spec rejects, such as ``None`` under ``{n:.2f}``) is returned unformatted. Each
+    problem is logged once per key. The only error that can escape is the ``ValueError`` that
+    :func:`get_language` raises on first use when ``LLMOPENFINANCE_LANG`` is invalid. It is not listed in a
+    ``Raises:`` section because ruff's DOC502 rejects exceptions the function does not raise itself.
 
     Args:
         key: Dotted catalog key such as ``"area.name"``.
@@ -135,7 +138,7 @@ def t(key: str, **values: object) -> str:
         _warn_once("missing", key, "Message key %r missing from the %s catalog; using pt-BR", key, language)
     try:
         return template.format(**values)
-    except (KeyError, IndexError, ValueError) as exc:
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
         _warn_once(
             "format", key, "Cannot format message %r (%s: %s); returning the template", key, type(exc).__name__, exc
         )
