@@ -22,7 +22,7 @@ uv run finassist --provider ollama --db smoke.duckdb ask "Liste as 3 maiores des
 Expected results for the second question: R$ 300,00 (Loja de Móveis), R$ 250,00 (Mercado Livre) and R$ 210,00
 (Amazon), found through a `query_transactions` call. If the model answers without the
 `↳ consultando ...` status line, it skipped the tools. That is a regression; see the rule about aggregates in
-`agent.SYSTEM_PROMPT`.
+`agent.system_prompt`.
 
 ## Pluggy sandbox (real API, fake bank)
 

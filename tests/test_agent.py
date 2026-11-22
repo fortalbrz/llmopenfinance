@@ -1,10 +1,19 @@
 """Tests for the provider-agnostic assistant loop with a scripted fake LLM."""
 
-from collections.abc import Iterator, Sequence
+import hashlib
+import re
+from collections.abc import Callable, Iterator, Sequence
 
 import pytest
 
-from llmopenfinance.agent import AssistantError, FinanceAssistant, ToolStatus, build_system_prompt
+from llmopenfinance.agent import (
+    AssistantError,
+    FinanceAssistant,
+    ToolStatus,
+    build_system_prompt,
+    stop_reason_message,
+    system_prompt,
+)
 from llmopenfinance.chat import AbstractChat, Event, LLMError, TextDelta, ToolCallsReady, TurnEnd
 from llmopenfinance.tools import ToolCall, ToolRegistry, ToolResult, ToolSpec
 from tests.conftest import TODAY
@@ -144,3 +153,68 @@ def test_interrupted_answer_rolls_back_history(con):
     stream.close()  # e.g. Ctrl+C while rendering
     assert chat.conversation_history == []
     assert chat.compacted == 0
+
+
+def test_system_prompt_pt_is_byte_identical():
+    """The pt-BR prompt moved into the catalog must be exactly what the old constant held."""
+    prompt = system_prompt()
+    assert (
+        hashlib.sha256(prompt.encode()).hexdigest()
+        == "75aac0f1c8c6815c7d3bae9038b3719ee1996699a020466909acf387e71edb53"
+    )
+    assert len(prompt) == 1856
+
+
+def test_system_prompt_en(use_language: Callable[[str], None]):
+    use_language("en")
+    prompt = system_prompt()
+    assert prompt.startswith("You are a personal financial assistant in the terminal. ALWAYS respond in English,")
+    assert "R$ 1,234.56" in prompt
+    assert "YYYY-MM-DD" in prompt
+    for number in range(1, 8):
+        assert re.search(rf"^{number}\. ", prompt, re.MULTILINE), f"rule {number} missing"
+    assert "detect_subscriptions" in prompt
+    assert "run_sql" in prompt
+    assert "/sync" in prompt
+    assert re.search(r"^8\. Stored category labels .* Brazilian Portuguese", prompt, re.MULTILINE)
+    assert "translate them naturally when answering" in prompt
+    assert "Responda" not in prompt
+    # The catalog guard exempts this key, so check here that the quoted label is the only Portuguese in it.
+    assert not any(char in "áàâãéêíóôõúç" for char in prompt.replace("'Alimentação'", "").lower())
+    assert prompt.endswith("\n")
+
+
+def test_system_prompt_follows_the_language_switch(use_language: Callable[[str], None]):
+    assert "Responda SEMPRE em português do Brasil" in system_prompt()
+    use_language("en")
+    assert "Responda" not in system_prompt()
+    assert "ALWAYS respond in English" in system_prompt()
+
+
+def test_build_system_prompt_date_line():
+    assert "\nData de hoje: 22/11/2026.\n\nSNAP" in build_system_prompt("SNAP", today=TODAY)
+
+
+def test_build_system_prompt_date_line_en(use_language: Callable[[str], None]):
+    use_language("en")
+    prompt = build_system_prompt("SNAP", today=TODAY)
+    assert prompt.endswith("\nToday's date: 2026-11-22.\n\nSNAP")
+    assert "ALWAYS respond in English" in prompt
+    assert "Data de hoje" not in prompt
+
+
+def test_stop_reason_message_per_language(use_language: Callable[[str], None]):
+    assert stop_reason_message("max_tokens") == "Resposta interrompida pelo limite de tokens."
+    assert stop_reason_message("refusal") == "O modelo se recusou a responder esta pergunta."
+    assert stop_reason_message("end_turn") is None
+    use_language("en")
+    assert stop_reason_message("max_tokens") == "Response cut off by the token limit."
+    assert stop_reason_message("refusal") == "The model refused to answer this question."
+    assert stop_reason_message("end_turn") is None
+
+
+def test_stop_reason_messages_en(con, use_language: Callable[[str], None]):
+    use_language("en")
+    _, assistant = make(con, [[TextDelta("partial"), TurnEnd("max_tokens")]])
+    events = list(assistant.ask("x"))
+    assert events[-1] == AssistantError("Response cut off by the token limit.")

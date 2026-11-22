@@ -17,7 +17,12 @@ SOURCE_DIR = Path(__file__).resolve().parents[1] / "src" / "llmopenfinance"
 PT_ACCENTS = "áàâãéêíóôõúç"
 
 # Catalog keys whose English value may legitimately contain Portuguese (for example a stored category label).
-ALLOWED_PT_KEYS: frozenset[str] = frozenset()
+ALLOWED_PT_KEYS: frozenset[str] = frozenset(
+    {
+        # Rule 8 quotes the stored Portuguese category label 'Alimentação' inside the English prompt.
+        "prompt.system",
+    }
+)
 
 
 def catalog_keys_diff(pt: Mapping[str, str], en: Mapping[str, str]) -> tuple[list[str], list[str]]:
