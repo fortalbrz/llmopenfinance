@@ -43,15 +43,21 @@ from llmopenfinance.constants import (
     DEFAULT_OLLAMA_SERVER,
     ENV_ANTHROPIC_KEYS,
 )
+from llmopenfinance.i18n import t
 from llmopenfinance.tools import ToolCall, ToolResult, ToolSpec
 
 logger = logging.getLogger(__name__)
 
 Message = dict[str, Any]
 
-FINAL_ANSWER_NOTE = (
-    "Limite de chamadas de ferramentas atingido. Responda agora ao usuário com os dados que você já obteve."
-)
+
+def final_answer_note() -> str:
+    """Return the system note that asks the model to answer now, in the process language.
+
+    Returns:
+        str: Note appended to the final round of an Ollama turn.
+    """
+    return t("llm.final_answer_note")
 
 
 class LLMError(RuntimeError):
@@ -383,7 +389,7 @@ class OllamaChat(AbstractChat):
             messages.append({"role": "system", "content": self.system_message})
         messages += self.conversation_history
         if final:
-            messages.append({"role": "system", "content": FINAL_ANSWER_NOTE})
+            messages.append({"role": "system", "content": final_answer_note()})
         return messages
 
     def _next_call_id(self) -> str:
@@ -431,7 +437,7 @@ class OllamaChat(AbstractChat):
                 if text:
                     yield TextDelta(text)
         except Exception as exc:
-            raise LLMError(f"Erro de comunicação com o Ollama: {exc}") from exc
+            raise LLMError(t("llm.error.ollama", error=exc)) from exc
 
         content = turn.content
         calls = [self._to_tool_call(raw) for raw in turn.raw_calls]
@@ -693,7 +699,7 @@ class ClaudeChat(AbstractChat):
                 attempt += 1
                 self._sleep(exc.wait)
             except httpx.HTTPError as exc:
-                raise LLMError(f"Erro de comunicação com a API do Claude: {exc}") from exc
+                raise LLMError(t("llm.error.claude", error=exc)) from exc
 
     def _stream_once(self, payload: Mapping[str, Any], *, attempt: int) -> Iterator[dict[str, Any]]:
         """Send one streaming request.
@@ -738,7 +744,7 @@ class ClaudeChat(AbstractChat):
             if text:
                 yield TextDelta(text)
         if accumulator.error:
-            raise LLMError(f"Erro no streaming do Claude: {accumulator.error}")
+            raise LLMError(t("llm.error.claude_stream", error=accumulator.error))
 
         stop_reason = accumulator.stop_reason or "end_turn"
         blocks = accumulator.content()
@@ -753,7 +759,7 @@ class ClaudeChat(AbstractChat):
             # Never leave unanswered tool_use blocks in history (e.g. truncated by max_tokens).
             blocks = [b for b in blocks if b.get("type") != "tool_use"]
         if not any(b.get("type") == "text" for b in blocks) and not calls:
-            blocks.append({"type": "text", "text": "(sem resposta)"})
+            blocks.append({"type": "text", "text": t("llm.no_response")})
         self.conversation_history.append({"role": "assistant", "content": blocks})
         if calls:
             yield ToolCallsReady(tuple(calls))
@@ -796,4 +802,4 @@ def get_llm(provider: str, model: str = "", **kwargs: Any) -> AbstractChat:
         case "ollama":
             return OllamaChat(model=model or None, **kwargs)
         case _:
-            raise ValueError(f"Provedor desconhecido '{provider}'. Use: claude | ollama")
+            raise ValueError(t("llm.error.unknown_provider", provider=provider))

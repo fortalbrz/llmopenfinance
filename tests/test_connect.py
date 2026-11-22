@@ -6,6 +6,7 @@ import threading
 import httpx
 import pytest
 
+from llmopenfinance import messages_pt
 from llmopenfinance.connect import build_page, run_connect_flow, wait_for_item
 
 
@@ -113,3 +114,52 @@ def test_run_connect_flow_reports_url(fake_pluggy):
     run_connect_flow(fake_pluggy, lambda _i: None, open_browser=lambda _u: False, timeout=0.1, on_url=urls.append)
     assert urls
     assert urls[0].startswith("http://127.0.0.1:")
+
+
+def test_build_page_pt_keeps_language_markers():
+    html = build_page("t", "/n")
+    assert '<html lang="pt-BR">' in html
+    assert '"language": "pt"' in html
+    assert "<title>Conectar conta — llmopenfinance</title>" in html
+    assert "<h1>Conectar conta</h1>" in html
+    assert "Abrindo o Pluggy Connect…" in html
+    assert "status('Pronto! Volte ao terminal.')" in html
+
+
+def test_build_page_en(use_language):
+    use_language("en")
+    html = build_page("t", "/n")
+    assert '<html lang="en">' in html
+    assert '"language": "en"' in html
+    assert "<title>Connect account — llmopenfinance</title>" in html
+    assert "<h1>Connect account</h1>" in html
+    assert "Opening Pluggy Connect…" in html
+    assert "status('Account connected: ' + item.id + '. You can connect another one or close this tab.')" in html
+    assert "status('Done! Go back to the terminal.')" in html
+    assert "status('Error: ' + (e && e.message ? e.message : 'unknown'))" in html
+    for portuguese in ("Conectar", "Abrindo", "Você", "Pronto", "desconhecido"):
+        assert portuguese not in html
+
+
+def test_build_page_escapes_catalog_text(monkeypatch):
+    """A future catalog edit with quotes or markup must not break the HTML or the inline script."""
+    nasty = 'O\'Brien "quoted" </script><b>& back\\slash'
+    for key in (
+        "connect.page.title",
+        "connect.page.heading",
+        "connect.page.opening",
+        "connect.page.connected_prefix",
+        "connect.page.connected_suffix",
+        "connect.page.done",
+        "connect.page.error_prefix",
+        "connect.page.error_unknown",
+    ):
+        monkeypatch.setitem(messages_pt.MESSAGES, key, nasty)
+    html = build_page("t", "/n")
+    head, _, script = html.partition("<script>\n")
+    escaped = "O&#x27;Brien &quot;quoted&quot; &lt;/script&gt;&lt;b&gt;&amp; back\\slash"
+    assert f"<title>{escaped}</title>" in head
+    assert f"<h1>{escaped}</h1>" in html
+    # Exactly one closing script tag in the body: the nasty text never ends the inline script early.
+    assert script.count("</script>") == 1
+    assert "'O\\'Brien \"quoted\" <\\/script><b>& back\\\\slash'" in script

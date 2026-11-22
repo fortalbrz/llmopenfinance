@@ -135,3 +135,63 @@ def test_definitive_product_failure_still_marks_synced(store, fake_pluggy):
     fake_pluggy.fail["list_loans"] = PluggyError("not offered", 403)
     sync_item(fake_pluggy, store, ITEM_ID)
     assert sync_item(fake_pluggy, store, ITEM_ID).skipped
+
+
+def test_consent_warning_pt():
+    now = datetime(2026, 11, 22)
+    expired = _consent_warning({"consentExpiresAt": "2026-05-01T00:00:00Z"}, now)
+    expiring = _consent_warning({"consentExpiresAt": "2026-12-01T00:00:00Z"}, now)
+    assert expired == "consentimento expirou em 01/05/2026 — reconecte em meu.pluggy.ai"
+    assert expiring == "consentimento expira em 01/12/2026 — renove em meu.pluggy.ai"
+
+
+def test_consent_warning_en(use_language):
+    use_language("en")
+    now = datetime(2026, 11, 22)
+    expired = _consent_warning({"consentExpiresAt": "2026-05-01T00:00:00Z"}, now)
+    expiring = _consent_warning({"consentExpiresAt": "2026-12-01T00:00:00Z"}, now)
+    assert expired == "consent expired on 2026-05-01 — reconnect at meu.pluggy.ai"
+    assert expiring == "consent expires on 2026-12-01 — renew at meu.pluggy.ai"
+
+
+def test_sync_product_warnings_en(store, fake_pluggy, use_language):
+    use_language("en")
+    fake_pluggy.fail["list_loans"] = PluggyError("not supported", 403, "FORBIDDEN")
+    fake_pluggy.fail["list_investments"] = PluggyError("not supported", 403)
+    fake_pluggy.fail["list_bills"] = RuntimeError("weird")
+    result = sync_item(fake_pluggy, store, ITEM_ID)
+    assert result.ok
+    assert "loans unavailable (403 FORBIDDEN)" in result.warnings
+    assert "investments unavailable (403 )" in result.warnings
+    assert "bills failed (see the log)" in result.warnings
+
+
+def test_sync_attention_status_warning_en(store, fake_pluggy, use_language):
+    use_language("en")
+    fake_pluggy.items[ITEM_ID] = {**ITEM, "status": "LOGIN_ERROR"}
+    result = sync_item(fake_pluggy, store, ITEM_ID)
+    assert "connection status LOGIN_ERROR — reauthorize at meu.pluggy.ai" in result.warnings
+
+
+def test_sync_transient_product_failure_is_retried_in_en(store, fake_pluggy, use_language):
+    """The ``transient`` list holds the localised label; the retry logic must not depend on its text."""
+    use_language("en")
+    fake_pluggy.fail["list_bills"] = PluggyError("svc", 503)
+    assert sync_item(fake_pluggy, store, ITEM_ID).ok
+    fake_pluggy.fail.clear()
+    assert not sync_item(fake_pluggy, store, ITEM_ID).skipped
+
+
+def _synced_categories(path, fake_pluggy):
+    with FinanceStore(path) as s:
+        s.add_item(ITEM_ID)
+        sync_all(fake_pluggy, s)
+        return set(s.con.execute("SELECT id, category FROM v_transactions").fetchall())
+
+
+def test_synced_categories_do_not_depend_on_language(tmp_path, fake_pluggy, use_language):
+    pt_categories = _synced_categories(tmp_path / "pt.duckdb", fake_pluggy)
+    use_language("en")
+    en_categories = _synced_categories(tmp_path / "en.duckdb", fake_pluggy)
+    assert pt_categories
+    assert pt_categories == en_categories

@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from llmopenfinance.i18n import format_date, t
 from llmopenfinance.pluggy import PluggyClient, PluggyError
 from llmopenfinance.store import FinanceStore, parse_timestamp, transaction_row
 
@@ -100,9 +101,9 @@ def _consent_warning(item: Mapping[str, Any], now: datetime) -> str | None:
     if expires is None:
         return None
     if expires <= now:
-        return f"consentimento expirou em {expires:%d/%m/%Y} — reconecte em meu.pluggy.ai"
+        return t("sync.warning.consent_expired", date=format_date(expires.date()))
     if expires - now <= timedelta(days=30):
-        return f"consentimento expira em {expires:%d/%m/%Y} — renove em meu.pluggy.ai"
+        return t("sync.warning.consent_expiring", date=format_date(expires.date()))
     return None
 
 
@@ -136,12 +137,12 @@ def _try(label: str, func: Callable[[], int], warnings: list[str], transient: li
         return func()
     except PluggyError as exc:
         logger.warning("%s unavailable: %s", label, exc)
-        warnings.append(f"{label} indisponível ({exc.status_code} {exc.code or ''})".strip())
+        warnings.append(t("sync.warning.unavailable", label=label, status=exc.status_code, code=exc.code or "").strip())
         if _is_transient(exc):
             transient.append(label)
     except Exception:
         logger.exception("%s failed", label)
-        warnings.append(f"{label} falhou (veja o log)")
+        warnings.append(t("sync.warning.failed", label=label))
         transient.append(label)
     return 0
 
@@ -178,7 +179,10 @@ def _sync_accounts(
         counts["transactions"] += store.replace_transactions(account_id, rows)
         if str(account_type).upper() == "CREDIT":
             counts["bills"] = counts.get("bills", 0) + _try(
-                "faturas", lambda a=account_id: store.replace_bills(a, client.list_bills(a)), warnings, transient
+                t("sync.product.bills"),
+                lambda a=account_id: store.replace_bills(a, client.list_bills(a)),
+                warnings,
+                transient,
             )
 
 
@@ -204,7 +208,7 @@ def sync_item(client: PluggyClient, store: FinanceStore, item_id: str, *, force:
 
     status = str(item.get("status") or "")
     if status in ATTENTION_STATUSES:
-        warnings.append(f"conexão com status {status} — reautorize em meu.pluggy.ai")
+        warnings.append(t("sync.warning.attention", status=status))
     consent = _consent_warning(item, now)
     if consent:
         warnings.append(consent)
@@ -224,13 +228,13 @@ def sync_item(client: PluggyClient, store: FinanceStore, item_id: str, *, force:
         return ItemResult(item_id, ok=False, counts=counts, warnings=tuple(warnings), error=str(exc))
 
     counts["investments"] = _try(
-        "investimentos",
+        t("sync.product.investments"),
         lambda: store.replace_investments(item_id, client.list_investments(item_id)),
         warnings,
         transient,
     )
     counts["loans"] = _try(
-        "empréstimos", lambda: store.replace_loans(item_id, client.list_loans(item_id)), warnings, transient
+        t("sync.product.loans"), lambda: store.replace_loans(item_id, client.list_loans(item_id)), warnings, transient
     )
     # A transient product failure keeps the old watermark, so the next sync retries instead of skipping.
     store.update_item(item, synced=not transient)

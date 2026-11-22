@@ -14,6 +14,7 @@ dashboard.pluggy.ai → Demo → MeuPluggy, copy the item id and run ``finassist
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import queue
@@ -27,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from llmopenfinance.constants import MEU_PLUGGY_CONNECTOR_ID, PLUGGY_CONNECT_JS
+from llmopenfinance.i18n import get_language, t
 from llmopenfinance.pluggy import PluggyClient
 
 logger = logging.getLogger(__name__)
@@ -34,13 +36,13 @@ logger = logging.getLogger(__name__)
 FINAL_ITEM_STATUSES = frozenset({"UPDATED", "LOGIN_ERROR", "OUTDATED", "WAITING_USER_INPUT", "WAITING_USER_ACTION"})
 
 PAGE_TEMPLATE = """<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><title>Conectar conta — llmopenfinance</title>
+<html lang="{lang}"><head><meta charset="utf-8"><title>{title}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.5}}
 code{{background:#eee;padding:.1rem .3rem;border-radius:.2rem}}</style>
 <script src="{script_url}"></script></head>
-<body><h1>Conectar conta</h1>
-<p id="status">Abrindo o Pluggy Connect…</p>
+<body><h1>{heading}</h1>
+<p id="status">{opening}</p>
 <script>
 const base = {base_path};
 const seen = new Set();
@@ -50,19 +52,36 @@ const report = (item, event) => {{
   seen.add(item.id);
   fetch(base + '/item', {{method: 'POST', headers: {{'Content-Type': 'application/json'}},
     body: JSON.stringify({{itemId: item.id, event: event}})}});
-  status('Conta conectada: ' + item.id + '. Você pode conectar outra ou fechar esta aba.');
+  status({connected_prefix} + item.id + {connected_suffix});
 }};
-const done = () => fetch(base + '/done', {{method: 'POST'}}).finally(() => status('Pronto! Volte ao terminal.'));
+const done = () => fetch(base + '/done', {{method: 'POST'}}).finally(() => status({done_text}));
 const connect = new PluggyConnect({options});
 connect.init();
 </script></body></html>
 """
 
 
+def _js_string(text: str) -> str:
+    """Render ``text`` as a single-quoted JavaScript string literal for the inline page script.
+
+    ``json.dumps`` does the escaping (``ensure_ascii=False`` keeps accents readable); the double quotes
+    are then swapped for single ones and ``</`` is split so no text can close the ``<script>`` element.
+
+    Args:
+        text: Catalog text to embed.
+
+    Returns:
+        str: The quoted literal, including the surrounding single quotes.
+    """
+    body = json.dumps(text, ensure_ascii=False)[1:-1]
+    body = body.replace('\\"', '"').replace("'", "\\'").replace("</", "<\\/")
+    return f"'{body}'"
+
+
 def build_page(
     connect_token: str, base_path: str, *, sandbox: bool = False, script_url: str = PLUGGY_CONNECT_JS
 ) -> str:
-    """Render the loopback HTML page.
+    """Render the loopback HTML page in the process language (text, ``<html lang>`` and widget language).
 
     Args:
         connect_token: Token from ``POST /connect_token``.
@@ -73,20 +92,34 @@ def build_page(
     Returns:
         str: HTML document.
     """
-    options: dict[str, Any] = {"connectToken": connect_token, "language": "pt"}
+    language = get_language()
+    options: dict[str, Any] = {"connectToken": connect_token, "language": language.split("-")[0]}
     if sandbox:
         options["includeSandbox"] = True
     else:
         options["connectorIds"] = [MEU_PLUGGY_CONNECTOR_ID]
+    error_prefix = _js_string(t("connect.page.error_prefix"))
+    error_unknown = _js_string(t("connect.page.error_unknown"))
     # Callbacks are JS functions, so splice them into the JSON object literal.
     options_js = json.dumps(options)[:-1] + (
         ", onEvent: (e) => { if (e && e.item) report(e.item, e.event); }"
         ", onSuccess: (d) => report(d && d.item, 'SUCCESS')"
         ", onError: (e) => { report(e && e.data && e.data.item, 'ERROR');"
-        " status('Erro: ' + (e && e.message ? e.message : 'desconhecido')); }"
+        f" status({error_prefix} + (e && e.message ? e.message : {error_unknown})); }}"
         ", onClose: done }"
     )
-    return PAGE_TEMPLATE.format(script_url=script_url, base_path=json.dumps(base_path), options=options_js)
+    return PAGE_TEMPLATE.format(
+        script_url=script_url,
+        base_path=json.dumps(base_path),
+        options=options_js,
+        lang=html.escape(language),
+        title=html.escape(t("connect.page.title")),
+        heading=html.escape(t("connect.page.heading")),
+        opening=html.escape(t("connect.page.opening")),
+        connected_prefix=_js_string(t("connect.page.connected_prefix")),
+        connected_suffix=_js_string(t("connect.page.connected_suffix")),
+        done_text=_js_string(t("connect.page.done")),
+    )
 
 
 @dataclass

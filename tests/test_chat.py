@@ -14,6 +14,7 @@ from llmopenfinance.chat import (
     TextDelta,
     ToolCallsReady,
     TurnEnd,
+    final_answer_note,
     get_llm,
     iter_sse_events,
     parse_text_tool_call,
@@ -453,3 +454,80 @@ def test_get_llm(monkeypatch):
     assert get_llm("ollama", "m", client=FakeOllamaClient()).model == "m"
     with pytest.raises(ValueError, match="desconhecido"):
         get_llm("gpt")
+
+
+def test_get_llm_unknown_provider_pt():
+    with pytest.raises(ValueError) as excinfo:
+        get_llm("x")
+    assert str(excinfo.value) == "Provedor desconhecido 'x'. Use: claude | ollama"
+
+
+def test_get_llm_unknown_provider_en(use_language):
+    use_language("en")
+    with pytest.raises(ValueError) as excinfo:
+        get_llm("x")
+    assert str(excinfo.value) == "Unknown provider 'x'. Use: claude | ollama"
+
+
+def test_final_answer_note_pt():
+    assert final_answer_note() == (
+        "Limite de chamadas de ferramentas atingido. Responda agora ao usuário com os dados que você já obteve."
+    )
+
+
+def test_final_answer_note_en(use_language):
+    use_language("en")
+    assert final_answer_note() == "Tool call limit reached. Answer the user now with the data you already obtained."
+
+
+def test_ollama_final_round_note_follows_language(use_language):
+    use_language("en")
+    client = FakeOllamaClient([[chunk("final answer", done=True)]])
+    chat = OllamaChat(client=client)
+    chat.add_user_message("x")
+    list(chat.stream_turn(TOOLS, final=True))
+    assert client.requests[0]["messages"][-1]["content"].startswith("Tool call limit reached.")
+
+
+def test_ollama_error_text_en(use_language):
+    use_language("en")
+    chat = OllamaChat(client=FakeOllamaClient(fail_chat=True))
+    chat.add_user_message("x")
+    with pytest.raises(LLMError) as excinfo:
+        list(chat.stream_turn(None))
+    assert str(excinfo.value) == "Error communicating with Ollama: refused"
+
+
+def test_claude_transport_error_text_en(use_language):
+    use_language("en")
+
+    def broken(request):
+        raise httpx.ReadTimeout("slow", request=request)
+
+    http = httpx.Client(transport=httpx.MockTransport(broken), base_url="https://api.anthropic.com")
+    with pytest.raises(LLMError) as excinfo:
+        ClaudeChat(api_key="k", http=http).chat("x")
+    assert str(excinfo.value) == "Error communicating with the Claude API: slow"
+
+
+def test_claude_stream_error_text_en(use_language):
+    use_language("en")
+    stream = sse(
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+    chat = claude(ClaudeApi((200, stream, None)))
+    chat.add_user_message("x")
+    with pytest.raises(LLMError, match=r"^Claude streaming error: .*overloaded_error"):
+        list(chat.stream_turn(None))
+
+
+def test_claude_empty_answer_placeholder_en(use_language):
+    use_language("en")
+    stream = sse(
+        {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}},
+    )
+    chat = claude(ClaudeApi((200, stream, None)))
+    chat.add_user_message("x")
+    list(chat.stream_turn(TOOLS))
+    assert chat.conversation_history[-1]["content"] == [{"type": "text", "text": "(no response)"}]
