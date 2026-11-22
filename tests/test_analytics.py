@@ -333,3 +333,140 @@ def test_detect_subscriptions_internal_codes_stay_portuguese_in_en(con, use_lang
     localized = analytics.localize_subscriptions(result)
     shown = {s["merchant_key"]: s for s in localized["subscriptions"]}
     assert (shown["netflix com"]["frequency"], shown["netflix com"]["confidence"]) == ("monthly", "high")
+
+
+def test_build_snapshot_en(con, use_language):
+    use_language("en")
+    text = analytics.build_snapshot(con, today=TODAY)
+    lines = text.splitlines()
+    assert lines[0] == "# Financial summary (today: 2026-11-22; transactions from 2026-01-05 to 2026-11-20, 91 entries)"
+    for heading in (
+        "## Accounts",
+        "## Monthly cash flow (last 6 months; current month partial)",
+        "month | income | spending | balance",
+        "## Largest spending categories (monthly average over the last 3 complete months)",
+        "## Active recurring charges detected (total ≈ R$ 329.80/month)",
+        "## Recent credit card bills",
+        "## Investments: total R$ 20,000.00",
+        "## Loans/financing: outstanding balance R$ 12,000.00",
+    ):
+        assert heading in lines
+    assert "R$ 1," in text
+    assert "R$ 3,500.75" in text
+    # Amounts, ISO dates and stored data keep their value; only the sentence frames follow the language.
+    assert "- Nubank Conta (CHECKING_ACCOUNT): balance R$ 3,500.75" in lines
+    assert (
+        "- Nubank Ultravioleta (credit card): current bill R$ 1,890.40, "
+        "available limit R$ 8,109.60 of R$ 10,000.00, due 2026-12-05"
+    ) in lines
+    assert "- Nubank Ultravioleta: R$ 1,450.00, due 2026-11-05, minimum R$ 217.50" in lines
+    assert "- NETFLIX.COM [Streaming de vídeo]: R$ 55.90 monthly, last 2026-11-08 (confidence high)" in lines
+    assert "- FIXED_INCOME: R$ 15,000.00 (1 positions)" in lines
+    assert "- Crédito pessoal: balance R$ 12,000.00, installment R$ 980.00, CET 35.2" in lines
+    # The Portuguese frame words are gone. "Contas de consumo" is a stored category label and stays as it is.
+    for word in ("Resumo", "Fluxo", "mensal", "confiança", "vencimento", "saldo", "posições"):
+        assert word not in text
+    assert "Contas" not in text.replace("Contas de consumo", "")
+    assert "- Contas de consumo: R$ 189.00" in lines
+
+
+def test_build_snapshot_empty_db_en(use_language):
+    from llmopenfinance.store import FinanceStore
+
+    use_language("en")
+    store = FinanceStore(":memory:")
+    store.update_item({"id": "x", "status": "LOGIN_ERROR", "connector": {"name": "Banco"}})
+    text = analytics.build_snapshot(store.con, today=TODAY)
+    store.close()
+    lines = text.splitlines()
+    assert lines[0] == "# Financial summary (today: 2026-11-22; transactions from — to —, 0 entries)"
+    assert "- (no accounts synced)" in lines
+    assert "## Connections needing attention" in lines
+    assert "- Banco: LOGIN_ERROR" in lines
+    assert "nenhuma" not in text
+    assert "atenção" not in text
+
+
+@pytest.mark.parametrize(
+    ("language", "card", "loan"),
+    [
+        (
+            "pt-BR",
+            "- Cartao X (cartão de crédito): fatura atual R$ 10,00, limite disponível — de —, vencimento —",
+            "- FINANCING: saldo R$ 500,00, parcela R$ 50,00, CET —",
+        ),
+        (
+            "en",
+            "- Cartao X (credit card): current bill R$ 10.00, available limit — of —, due —",
+            "- FINANCING: balance R$ 500.00, installment R$ 50.00, CET —",
+        ),
+    ],
+)
+def test_build_snapshot_missing_values_show_a_dash(language, card, loan, use_language):
+    from llmopenfinance.store import FinanceStore
+    from tests.conftest import populate
+
+    use_language(language)
+    store = FinanceStore(":memory:")
+    populate(store)
+    store.add_item("item-2")
+    store.replace_accounts(
+        "item-2",
+        [{"id": "acc-x", "itemId": "item-2", "type": "CREDIT", "name": "Cartao X", "balance": 10.0}],
+    )
+    store.replace_loans(
+        "item-2",
+        [
+            {
+                "id": "loan-x",
+                "type": "FINANCING",
+                "payments": {"contractOutstandingBalance": 500.0},
+                "installmentAmount": 50,
+            }
+        ],
+    )
+    lines = analytics.build_snapshot(store.con, today=TODAY).splitlines()
+    store.close()
+    assert card in lines
+    assert loan in lines
+
+
+def test_build_snapshot_pt_frames_unchanged(con):
+    """Pins the pt-BR sentence frames, so the catalog move cannot drift from the original f-strings."""
+    lines = analytics.build_snapshot(con, today=TODAY).splitlines()
+    assert lines[0] == "# Resumo financeiro (hoje: 2026-11-22; transações de 2026-01-05 a 2026-11-20, 91 lançamentos)"
+    for expected in (
+        "## Contas",
+        "- Nubank Conta (CHECKING_ACCOUNT): saldo R$ 3.500,75",
+        (
+            "- Nubank Ultravioleta (cartão de crédito): fatura atual R$ 1.890,40, "
+            "limite disponível R$ 8.109,60 de R$ 10.000,00, vencimento 2026-12-05"
+        ),
+        "## Fluxo de caixa mensal (últimos 6 meses; mês atual parcial)",
+        "mês | receitas | gastos | saldo",
+        "## Maiores categorias de gasto (média mensal dos últimos 3 meses completos)",
+        "## Cobranças recorrentes ativas detectadas (total ≈ R$ 329,80/mês)",
+        "- NETFLIX.COM [Streaming de vídeo]: R$ 55,90 mensal, último 2026-11-08 (confiança alta)",
+        "## Faturas de cartão recentes",
+        "- Nubank Ultravioleta: R$ 1.450,00, vencimento 2026-11-05, mínimo R$ 217,50",
+        "## Investimentos: total R$ 20.000,00",
+        "- FIXED_INCOME: R$ 15.000,00 (1 posições)",
+        "## Empréstimos/financiamentos: saldo devedor R$ 12.000,00",
+        "- Crédito pessoal: saldo R$ 12.000,00, parcela R$ 980,00, CET 35.2",
+    ):
+        assert expected in lines
+
+
+def test_run_select_errors_en(con, use_language):
+    use_language("en")
+    with pytest.raises(ValueError, match=r"^Send exactly one SQL statement\.$"):
+        analytics.run_select(con, "SELECT 1; SELECT 2")
+    with pytest.raises(ValueError, match=r"^Only SELECT queries are allowed\.$"):
+        analytics.run_select(con, "DELETE FROM transactions")
+
+
+def test_run_select_errors_pt(con):
+    with pytest.raises(ValueError, match=r"^Envie exatamente uma instrução SQL\.$"):
+        analytics.run_select(con, "SELECT 1; SELECT 2")
+    with pytest.raises(ValueError, match=r"^Somente consultas SELECT são permitidas\.$"):
+        analytics.run_select(con, "DELETE FROM transactions")

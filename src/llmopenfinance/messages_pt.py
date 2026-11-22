@@ -36,6 +36,30 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "enum.confidence.high": "alta",
     "enum.confidence.medium": "média",
     "enum.confidence.low": "baixa",
+    "error.sql.one_statement": "Envie exatamente uma instrução SQL.",
+    "error.sql.select_only": "Somente consultas SELECT são permitidas.",
+    "snapshot.header": ("# Resumo financeiro (hoje: {today}; transações de {first} a {last}, {count} lançamentos)"),
+    "snapshot.accounts.title": "## Contas",
+    "snapshot.accounts.card": (
+        "- {name} (cartão de crédito): fatura atual {balance}, limite disponível {available} de {limit}, "
+        "vencimento {due}"
+    ),
+    "snapshot.accounts.bank": "- {name} ({kind}): saldo {balance}",
+    "snapshot.accounts.none": "- (nenhuma conta sincronizada)",
+    "snapshot.cashflow.title": "## Fluxo de caixa mensal (últimos 6 meses; mês atual parcial)",
+    "snapshot.cashflow.columns": "mês | receitas | gastos | saldo",
+    "snapshot.categories.title": "## Maiores categorias de gasto (média mensal dos últimos 3 meses completos)",
+    "snapshot.recurring.title": "## Cobranças recorrentes ativas detectadas (total ≈ {total}/mês)",
+    "snapshot.recurring.line": (
+        "- {name} [{category}]: {amount} {frequency}, último {last_date} (confiança {confidence})"
+    ),
+    "snapshot.bills.title": "## Faturas de cartão recentes",
+    "snapshot.bills.line": "- {account}: {total}, vencimento {due_date}, mínimo {minimum}",
+    "snapshot.investments.title": "## Investimentos: total {total}",
+    "snapshot.investments.line": "- {kind}: {total} ({positions} posições)",
+    "snapshot.loans.title": "## Empréstimos/financiamentos: saldo devedor {total}",
+    "snapshot.loans.line": "- {name}: saldo {balance}, parcela {installment}, CET {cet}",
+    "snapshot.attention.title": "## Conexões que precisam de atenção",
     "tool.truncated": '…"[resultado truncado — refine os filtros]"',
     "tool.repeated_note": "[Você já chamou esta ferramenta com os mesmos argumentos; use o resultado abaixo.] ",
     "tool.error.unknown": "Ferramenta desconhecida '{name}'. Use: {names}",

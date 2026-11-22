@@ -611,9 +611,9 @@ def run_select(
     """
     statements = duckdb.extract_statements(sql)
     if len(statements) != 1:
-        raise ValueError("Envie exatamente uma instrução SQL.")
+        raise ValueError(t("error.sql.one_statement"))
     if statements[0].type != duckdb.StatementType.SELECT:
-        raise ValueError("Somente consultas SELECT são permitidas.")
+        raise ValueError(t("error.sql.select_only"))
     query = _TRAILING_SQL_RE.sub("", statements[0].query).strip().rstrip(";").strip()
     timer = threading.Timer(timeout, con.interrupt)
     timer.start()
@@ -634,21 +634,33 @@ def run_select(
 
 
 def _snapshot_accounts(con: duckdb.DuckDBPyConnection) -> list[str]:
-    lines = ["## Contas"]
+    lines = [t("snapshot.accounts.title")]
     for acc in accounts_overview(con):
         if acc["type"] == "CREDIT":
             lines.append(
-                f"- {acc['name']} (cartão de crédito): fatura atual {brl(acc['balance'])}, "
-                f"limite disponível {brl(acc['available_credit_limit'])} de {brl(acc['credit_limit'])}, "
-                f"vencimento {acc['balance_due_date'] or '—'}"
+                t(
+                    "snapshot.accounts.card",
+                    name=acc["name"],
+                    balance=brl(acc["balance"]),
+                    available=brl(acc["available_credit_limit"]),
+                    limit=brl(acc["credit_limit"]),
+                    due=acc["balance_due_date"] or "—",
+                )
             )
         else:
-            lines.append(f"- {acc['name']} ({acc['subtype'] or acc['type']}): saldo {brl(acc['balance'])}")
-    return lines if len(lines) > 1 else [*lines, "- (nenhuma conta sincronizada)"]
+            lines.append(
+                t(
+                    "snapshot.accounts.bank",
+                    name=acc["name"],
+                    kind=acc["subtype"] or acc["type"],
+                    balance=brl(acc["balance"]),
+                )
+            )
+    return lines if len(lines) > 1 else [*lines, t("snapshot.accounts.none")]
 
 
 def _snapshot_cashflow(con: duckdb.DuckDBPyConnection, today: date) -> list[str]:
-    lines = ["## Fluxo de caixa mensal (últimos 6 meses; mês atual parcial)", "mês | receitas | gastos | saldo"]
+    lines = [t("snapshot.cashflow.title"), t("snapshot.cashflow.columns")]
     lines += [
         f"{r['month']} | {brl(r['income'])} | {brl(r['spending'])} | {brl(r['net'])}"
         for r in cashflow(con, months=6, today=today)
@@ -663,17 +675,24 @@ def _snapshot_categories(con: duckdb.DuckDBPyConnection, today: date) -> list[st
         if start.strftime("%Y-%m") <= row["month"] < end.strftime("%Y-%m"):
             totals[row["category"]] += float(row["total"])
     ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:8]
-    lines = ["## Maiores categorias de gasto (média mensal dos últimos 3 meses completos)"]
+    lines = [t("snapshot.categories.title")]
     lines += [f"- {cat}: {brl(total / 3)}" for cat, total in ranked]
     return lines
 
 
 def _snapshot_recurring(con: duckdb.DuckDBPyConnection, today: date) -> list[str]:
-    detected = detect_subscriptions(con, today=today)
-    lines = [f"## Cobranças recorrentes ativas detectadas (total ≈ {brl(detected['monthly_total'])}/mês)"]
+    detected = localize_subscriptions(detect_subscriptions(con, today=today))
+    lines = [t("snapshot.recurring.title", total=brl(detected["monthly_total"]))]
     lines += [
-        f"- {s['name']} [{s['category']}]: {brl(s['average_amount'])} {s['frequency']}, último {s['last_date']}"
-        f" (confiança {s['confidence']})"
+        t(
+            "snapshot.recurring.line",
+            name=s["name"],
+            category=s["category"],
+            amount=brl(s["average_amount"]),
+            frequency=s["frequency"],
+            last_date=s["last_date"],
+            confidence=s["confidence"],
+        )
         for s in detected["subscriptions"][:15]
     ]
     return lines
@@ -683,29 +702,51 @@ def _snapshot_other(con: duckdb.DuckDBPyConnection) -> list[str]:
     lines: list[str] = []
     bills = bills_overview(con, limit=3)
     if bills:
-        lines.append("## Faturas de cartão recentes")
+        lines.append(t("snapshot.bills.title"))
         lines += [
-            f"- {b['account']}: {brl(b['total_amount'])}, vencimento {b['due_date']}, "
-            f"mínimo {brl(b['minimum_payment_amount'])}"
+            t(
+                "snapshot.bills.line",
+                account=b["account"],
+                total=brl(b["total_amount"]),
+                due_date=b["due_date"],
+                minimum=brl(b["minimum_payment_amount"]),
+            )
             for b in bills
         ]
     inv = investments_overview(con)
     if inv["positions"]:
-        lines.append(f"## Investimentos: total {brl(inv['total'])}")
-        lines += [f"- {t['type']}: {brl(t['total'])} ({t['positions']} posições)" for t in inv["by_type"]]
+        lines.append(t("snapshot.investments.title", total=brl(inv["total"])))
+        lines += [
+            t(
+                "snapshot.investments.line",
+                kind=bucket["type"],
+                total=brl(bucket["total"]),
+                positions=bucket["positions"],
+            )
+            for bucket in inv["by_type"]
+        ]
     loans = loans_overview(con)
     if loans["loans"]:
-        lines.append(f"## Empréstimos/financiamentos: saldo devedor {brl(loans['total_outstanding'])}")
+        lines.append(t("snapshot.loans.title", total=brl(loans["total_outstanding"])))
         lines += [
-            f"- {loan['product_name'] or loan['type']}: saldo {brl(loan['outstanding_balance'])}, "
-            f"parcela {brl(loan['installment_amount'])}, CET {loan['cet'] if loan['cet'] is not None else '—'}"
+            t(
+                "snapshot.loans.line",
+                name=loan["product_name"] or loan["type"],
+                balance=brl(loan["outstanding_balance"]),
+                installment=brl(loan["installment_amount"]),
+                cet=loan["cet"] if loan["cet"] is not None else "—",
+            )
             for loan in loans["loans"][:5]
         ]
     return lines
 
 
 def build_snapshot(con: duckdb.DuckDBPyConnection, *, today: date | None = None) -> str:
-    """Build a compact pt-BR financial summary injected into the system prompt.
+    """Build a compact financial summary, in the process language, injected into the system prompt.
+
+    Labels and sentence frames come from the message catalog; amounts go through :func:`brl`, and dates stay ISO
+    (``YYYY-MM-DD``) in both languages. Stored data (category labels, account names, connector names and statuses)
+    is shown as it is.
 
     Args:
         con: DuckDB connection.
@@ -720,10 +761,7 @@ def build_snapshot(con: duckdb.DuckDBPyConnection, *, today: date | None = None)
         None,
         0,
     )
-    header = (
-        f"# Resumo financeiro (hoje: {ref.isoformat()}; transações de {span[0] or '—'} a {span[1] or '—'}, "
-        f"{span[2]} lançamentos)"
-    )
+    header = t("snapshot.header", today=ref.isoformat(), first=span[0] or "—", last=span[1] or "—", count=span[2])
     parts = [header, *_snapshot_accounts(con), *_snapshot_cashflow(con, ref), *_snapshot_categories(con, ref)]
     parts += [*_snapshot_recurring(con, ref), *_snapshot_other(con)]
     attention = _records(
@@ -731,6 +769,6 @@ def build_snapshot(con: duckdb.DuckDBPyConnection, *, today: date | None = None)
         "SELECT connector_name, status, consent_expires_at FROM items WHERE status IS NOT NULL AND status <> 'UPDATED'",
     )
     if attention:
-        parts.append("## Conexões que precisam de atenção")
+        parts.append(t("snapshot.attention.title"))
         parts += [f"- {a['connector_name']}: {a['status']}" for a in attention]
     return "\n".join(parts)
