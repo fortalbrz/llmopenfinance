@@ -244,7 +244,6 @@ Open Finance (Pluggy) into a local database. Rules:
     "web.unsupported_media": "Send the body as JSON (Content-Type: application/json).",
     "web.not_found": "Address not found.",
     "web.internal_error": "Internal server error; see the log in the terminal.",
-    "web.sync_via_button": "Use the Sync button.",
     "web.exit_hint": "To leave, close this tab (the server keeps running; press Ctrl+C in the terminal).",
     "web.ui.title": "Finance assistant",
     "web.ui.send": "Send",

@@ -248,7 +248,6 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "web.unsupported_media": "Envie o corpo como JSON (Content-Type: application/json).",
     "web.not_found": "Endereço não encontrado.",
     "web.internal_error": "Erro interno do servidor; veja o log no terminal.",
-    "web.sync_via_button": "Use o botão Sincronizar.",
     "web.exit_hint": "Para sair, feche esta aba (o servidor continua; use Ctrl+C no terminal).",
     "web.ui.title": "Assistente financeiro",
     "web.ui.send": "Enviar",

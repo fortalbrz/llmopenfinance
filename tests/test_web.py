@@ -1,24 +1,31 @@
-"""Tests for the local web chat: Host check, token cookie, JSON-only POSTs, state, command and chat routes."""
+"""Tests for the local web chat: Host check, token cookie, JSON-only POSTs, state, command, chat and sync routes."""
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
+from flask import request_finished
 from flask.testing import FlaskClient
 from werkzeug.test import EnvironBuilder
 from werkzeug.wsgi import ClosingIterator
 
-from llmopenfinance import web
-from llmopenfinance.agent import FinanceAssistant
+from llmopenfinance import web, web_stream
+from llmopenfinance.agent import FinanceAssistant, build_system_prompt
 from llmopenfinance.chat import LLMError, TextDelta, TurnEnd
+from llmopenfinance.constants import ENV_PLUGGY_CLIENT_ID, ENV_PLUGGY_CLIENT_SECRET
 from llmopenfinance.i18n import t
-from llmopenfinance.session import BuildOptions, ChatSession
+from llmopenfinance.session import BuildOptions, ChatSession, Factories, Notice
 from llmopenfinance.store import FinanceStore
+from llmopenfinance.sync import ItemResult
 from llmopenfinance.tools import ToolCall, ToolRegistry
 from llmopenfinance.web import COOKIE_NAME, WebContext, create_app, host_allowed, new_token
+from tests.conftest import BANK_ID, ITEM_ID, FakePluggy
 from tests.test_agent import ScriptedChat, answer, tool_turn
 from tests.test_session import make_factories, store_opener
 
@@ -27,16 +34,19 @@ UseLanguage = Callable[[str], None]
 TOKEN = "s3cr3t-T0ken_value-for-tests"
 HOST = "127.0.0.1:8000"
 STATE_KEYS = {"provider", "model", "language", "last_sync", "counts", "busy", "strings", "transcript"}
+SYNC_THREAD_NAME = "finassist-web-sync"  # the name web.py gives its sync worker thread
 
 
-def make_ctx(db_path: Path, *, turns: list[Any] | None = None, host: str = "127.0.0.1") -> WebContext:
+def make_ctx(
+    db_path: Path, *, turns: list[Any] | None = None, host: str = "127.0.0.1", pluggy: Any = None
+) -> WebContext:
     session = ChatSession(store_opener(db_path))
     chat = ScriptedChat(turns or [])
     assistant = FinanceAssistant(chat, ToolRegistry(session.connection), session.snapshot)
     return WebContext(
         session=session,
         assistant=assistant,
-        factories=make_factories(db_path, llm=chat),
+        factories=make_factories(db_path, llm=chat, pluggy=pluggy),
         token=TOKEN,
         host=host,
         port=8000,
@@ -90,6 +100,16 @@ def events(response: Any) -> list[dict[str, Any]]:
 
 def history_length(ctx: WebContext) -> int:
     return len(ctx.assistant.chat.conversation_history)
+
+
+@pytest.fixture(autouse=True)
+def _no_sync_worker_left() -> Iterator[None]:
+    """Fail a test that leaves a sync worker thread running (every worker must be joined by its stream)."""
+    yield
+    for thread in threading.enumerate():
+        if thread.name == SYNC_THREAD_NAME:
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "a web sync worker outlived its test"
 
 
 # ---------------------------------------------------------------------------
@@ -526,17 +546,6 @@ def test_exit_in_box_returns_hint_and_keeps_serving(ctx: WebContext, use_languag
     assert not ctx.lock.locked()
 
 
-def test_sync_in_box_warns_to_use_button(ctx: WebContext, use_language: UseLanguage):
-    client = client_for(ctx)
-    expected = [{"type": "notice", "level": "warn", "text": t("web.sync_via_button")}, {"type": "done", "ok": False}]
-    assert events(chat(client, "/sync")) == expected
-    assert expected[0]["text"] == "Use o botão Sincronizar."
-    use_language("en")
-    assert events(chat(client, "/SYNC"))[0]["text"] == "Use the Sync button."
-    assert ctx.session.store.counts()["transactions"] > 0  # the read-only store is still open
-    assert not ctx.lock.locked()
-
-
 @pytest.mark.parametrize(
     "body",
     [
@@ -668,7 +677,7 @@ def test_failure_while_building_the_stream_releases_lock(ctx: WebContext, monkey
     def broken(_stream: Any) -> Any:
         raise RuntimeError("cannot build the response")
 
-    monkeypatch.setattr(web, "stream_with_context", broken)
+    monkeypatch.setattr(web_stream, "stream_with_context", broken)
     response = chat(client_for(ctx), "Quanto gastei?")
     assert response.status_code == 500
     assert response.get_json() == {"error": t("web.internal_error")}
@@ -721,6 +730,506 @@ def test_unexpected_exception_in_turn_rolls_back_history(db_path: Path):
         assert events(chat(client, "e agora?")) == [{"type": "text", "text": "depois"}, {"type": "done", "ok": True}]
     finally:
         context.session.close()
+
+
+class _CleanupRaisingAssistant:
+    """Stand-in assistant whose answer fails in its own cleanup when the stream is closed early."""
+
+    def ask(self, question: str) -> Iterator[TextDelta]:
+        try:
+            yield TextDelta("parcial")
+            yield TextDelta("resto")
+        finally:
+            raise RuntimeError("cleanup failed")
+
+
+def test_abort_with_raising_cleanup_does_not_yield_after_generator_exit(
+    ctx: WebContext, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(ctx, "assistant", _CleanupRaisingAssistant())
+    response = chat(client_for(ctx), "Quanto gastei?", buffered=False)
+    assert json.loads(next(iter(response.response))) == {"type": "text", "text": "parcial"}
+    with caplog.at_level(logging.ERROR, logger="llmopenfinance.web"):
+        response.close()  # must not raise "generator ignored GeneratorExit"
+    assert not ctx.lock.locked()
+    assert any(record.exc_info for record in caplog.records)
+
+
+def _raise_in_hook(*_args: Any, **_kwargs: Any) -> Any:
+    raise RuntimeError("hook failed")
+
+
+@pytest.mark.parametrize("hook", ["after_request", "request_finished"])
+@pytest.mark.parametrize("path", ["/api/chat", "/api/sync"])
+def test_raising_response_hook_does_not_leak_the_lock(
+    ctx: WebContext, monkeypatch: pytest.MonkeyPatch, hook: str, path: str
+):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    app = create_app(ctx)
+    client = app.test_client()
+    client.set_cookie(COOKIE_NAME, TOKEN, domain="127.0.0.1")
+    before = ctx.session.store
+    if hook == "after_request":
+        app.after_request(_raise_in_hook)
+        response = post(client, path, {"message": "Quanto gastei?"})
+    else:
+        with request_finished.connected_to(_raise_in_hook, app):
+            response = post(client, path, {"message": "Quanto gastei?"})
+    assert response.status_code == 500
+    assert not ctx.lock.locked()
+    assert fake.forces == []  # the stream was never read, so no sync started
+    assert ctx.session.store is before
+    assert history_length(ctx) == 0
+
+
+# ---------------------------------------------------------------------------
+# Sync
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def pluggy_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ENV_PLUGGY_CLIENT_ID, "cid")
+    monkeypatch.setenv(ENV_PLUGGY_CLIENT_SECRET, "secret")
+
+
+def changed_pluggy() -> FakePluggy:
+    """A fake Pluggy whose item changed since ``db_path`` was synced: one more bank transaction."""
+    pluggy = FakePluggy()
+    pluggy.items[ITEM_ID]["lastUpdatedAt"] = "2026-11-22T12:00:00.000Z"
+    pluggy.transactions[BANK_ID].append(
+        {
+            "id": "tv-nova",
+            "date": "2026-11-20T00:00:00.000Z",
+            "description": "LOJA DE TV",
+            "amount": -4321.0,
+            "type": "DEBIT",
+            "status": "POSTED",
+            "currencyCode": "BRL",
+        }
+    )
+    return pluggy
+
+
+def use_pluggy(ctx: WebContext, pluggy: FakePluggy) -> None:
+    ctx.factories = replace(ctx.factories, pluggy_client=lambda: pluggy)
+
+
+def sync(client: FlaskClient, body: Any = None, **kwargs: Any) -> Any:
+    if body is None:
+        kwargs.setdefault("content_type", "application/json")
+    return post(client, "/api/sync", body, **kwargs)
+
+
+class RecordingSync:
+    """Stand-in for ``session.run_sync``: records ``force``, emits one notice and one item, returns ``code``."""
+
+    def __init__(self, code: int = 0, *, during: Callable[[], None] | None = None) -> None:
+        self.code = code
+        self.during = during
+        self.forces: list[bool] = []
+
+    def __call__(
+        self,
+        factories: Factories,
+        *,
+        force: bool,
+        notify: Callable[[Notice], None],
+        on_item: Callable[[ItemResult], None],
+    ) -> int:
+        self.forces.append(force)
+        notify(Notice("info", "início"))
+        if self.during is not None:
+            self.during()
+        on_item(ItemResult("item-x", ok=True, counts={"transactions": 3}, warnings=("aviso",)))
+        return self.code
+
+
+RECORDED_EVENTS = [
+    {"type": "notice", "level": "info", "text": "início"},
+    {
+        "type": "progress",
+        "item_id": "item-x",
+        "ok": True,
+        "skipped": False,
+        "counts": {"transactions": 3},
+        "warnings": ["aviso"],
+        "error": None,
+    },
+]
+
+
+class BlockingSync(RecordingSync):
+    """A sync that, after its first notice, waits until the test sets :attr:`proceed`."""
+
+    def __init__(self) -> None:
+        super().__init__(during=self._block)
+        self.started = threading.Event()
+        self.proceed = threading.Event()
+
+    def _block(self) -> None:
+        self.started.set()
+        assert self.proceed.wait(10), "the test never let the sync finish"
+
+
+class Streamer(threading.Thread):
+    """Reads a whole streaming response in its own thread, as a WSGI server thread would."""
+
+    def __init__(self, send: Callable[[], Any]) -> None:
+        super().__init__(daemon=True)
+        self.send = send
+        self.received: list[dict[str, Any]] = []
+        self.error: BaseException | None = None
+
+    def run(self) -> None:
+        try:
+            self.received = events(self.send())
+        except BaseException as exc:
+            self.error = exc
+
+    def finish(self) -> list[dict[str, Any]]:
+        self.join(timeout=10)
+        assert not self.is_alive()
+        assert self.error is None
+        return self.received
+
+
+@pytest.mark.usefixtures("pluggy_credentials")
+def test_sync_streams_progress_and_done(ctx: WebContext):
+    pluggy = changed_pluggy()
+    use_pluggy(ctx, pluggy)
+    response = sync(client_for(ctx))
+    assert response.headers["Cache-Control"] == "no-store"
+    received = events(response)
+    assert received[0] == {"type": "notice", "level": "info", "text": t("cli.sync.start")}
+    progress = received[1]
+    assert set(progress) == {"type", "item_id", "ok", "skipped", "counts", "warnings", "error"}
+    assert progress["type"] == "progress"
+    assert progress["item_id"] == ITEM_ID
+    assert progress["ok"] is True
+    assert progress["skipped"] is False
+    assert progress["counts"]["transactions"] > 0
+    assert isinstance(progress["warnings"], list)
+    assert progress["error"] is None
+    assert received[2:] == [
+        {"type": "notice", "level": "info", "text": t("cli.sync.done", ok=1, failed=0)},
+        {"type": "done", "ok": True},
+    ]
+    assert pluggy.closed
+    assert not ctx.lock.locked()
+    assert ctx.session.store.counts()["transactions"] > 0  # the read-only store is open again
+
+
+@pytest.mark.usefixtures("pluggy_credentials")
+def test_sync_refreshes_assistant_and_status(db_path: Path):
+    context = make_ctx(db_path, turns=[answer("Resposta")], pluggy=changed_pluggy())
+    try:
+        client = client_for(context)
+        before = get(client, "/api/state").get_json()
+        assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+        assert history_length(context) > 0
+        prompt_before = context.assistant.chat.system_message
+        assert events(sync(client))[-1] == {"type": "done", "ok": True}
+        after = get(client, "/api/state").get_json()
+        assert after["counts"]["transactions"] == before["counts"]["transactions"] + 1
+        assert before["last_sync"] is None
+        assert after["last_sync"] is not None
+        assert after["busy"] is False
+        assert history_length(context) == 0  # the conversation was reset
+        assert context.assistant.chat.system_message != prompt_before
+        assert context.assistant.chat.system_message == build_system_prompt(context.session.snapshot())
+    finally:
+        context.session.close()
+
+
+def test_sync_clears_transcript(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    client = client_for(ctx)
+    assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+    assert len(ctx.transcript) == 2
+    # A failed sync resets the conversation too (as the CLI's /sync does), so the transcript goes with it.
+    monkeypatch.setattr(web, "run_sync", RecordingSync(1))
+    assert events(sync(client)) == [*RECORDED_EVENTS, {"type": "done", "ok": False}]
+    assert ctx.transcript == []
+    assert history_length(ctx) == 0
+    ctx.transcript.extend([{"role": "user", "text": "q"}, {"role": "assistant", "text": "a"}])
+    monkeypatch.setattr(web, "run_sync", RecordingSync(0))
+    assert events(sync(client)) == [*RECORDED_EVENTS, {"type": "done", "ok": True}]
+    assert ctx.transcript == []
+    assert get(client, "/api/state").get_json()["transcript"] == []
+
+
+def test_sync_busy_409_when_chat_holds_lock(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    started, proceed = threading.Event(), threading.Event()
+
+    def slow_answer(question: str) -> Iterator[TextDelta]:
+        started.set()
+        assert proceed.wait(10)
+        yield TextDelta("ok")
+
+    monkeypatch.setattr(ctx.assistant, "ask", slow_answer)
+    streamer = Streamer(lambda: chat(client_for(ctx), "Quanto gastei?"))
+    streamer.start()
+    try:
+        assert started.wait(10)
+        response = sync(client_for(ctx), {"force": True})
+        assert response.status_code == 409
+        assert response.get_json() == {"error": t("web.busy")}
+        assert fake.forces == []  # nothing queued
+    finally:
+        proceed.set()
+    assert streamer.finish()[-1] == {"type": "done", "ok": True}
+    assert not ctx.lock.locked()
+    assert events(sync(client_for(ctx)))[-1] == {"type": "done", "ok": True}
+    assert fake.forces == [False]
+
+
+def test_chat_and_commands_409_while_sync_runs(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = BlockingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    client = client_for(ctx)
+    cached = get(client, "/api/state").get_json()["counts"]
+    streamer = Streamer(lambda: sync(client_for(ctx)))
+    streamer.start()
+    try:
+        assert fake.started.wait(10)
+        assert any(thread.name == SYNC_THREAD_NAME for thread in threading.enumerate())  # the leak check sees it
+        for response in (
+            chat(client, "Quanto gastei?"),
+            command(client, "summary"),
+            sync(client),
+            chat(client, "/sync"),
+        ):
+            assert response.status_code == 409
+            assert response.get_json() == {"error": t("web.busy")}
+        state = get(client, "/api/state").get_json()  # the store is closed now: state must not touch it
+        assert state["busy"] is True
+        assert state["counts"] == cached
+    finally:
+        fake.proceed.set()
+    assert streamer.finish() == [*RECORDED_EVENTS, {"type": "done", "ok": True}]
+    assert fake.forces == [False]
+    assert len(ctx.assistant.chat.turns) == 1  # the chat request was refused, not queued
+    assert not ctx.lock.locked()
+    assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+
+
+def test_sync_without_credentials_keeps_server_usable(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(ENV_PLUGGY_CLIENT_ID, raising=False)
+    monkeypatch.delenv(ENV_PLUGGY_CLIENT_SECRET, raising=False)
+    client = client_for(ctx)
+    before = ctx.session.store
+    text = t("cli.sync.no_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET)
+    assert events(sync(client)) == [{"type": "notice", "level": "error", "text": text}, {"type": "done", "ok": False}]
+    assert not ctx.lock.locked()
+    assert ctx.session.store is not before  # closed for the sync, then reopened read-only
+    assert ctx.session.store.counts()["transactions"] > 0
+    assert command(client, "summary").get_json() == {"notices": [{"level": "info", "text": ctx.session.snapshot()}]}
+    assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+
+
+@pytest.mark.usefixtures("pluggy_credentials")
+def test_sync_database_locked_keeps_server_usable(ctx: WebContext, db_path: Path, use_language: UseLanguage):
+    use_language("en")
+    read_only_opener = store_opener(db_path)
+    opened: list[bool] = []
+
+    def open_store(*, read_only: bool = False) -> FinanceStore:
+        opened.append(read_only)
+        if not read_only:
+            raise duckdb.IOException("Could not set lock on file")
+        return read_only_opener(read_only=True)
+
+    ctx.factories = replace(ctx.factories, open_store=open_store)
+    client = client_for(ctx)
+    text = t("cli.sync.db_locked", error="Could not set lock on file")
+    assert events(sync(client)) == [{"type": "notice", "level": "warn", "text": text}, {"type": "done", "ok": False}]
+    assert opened == [False]
+    assert not ctx.lock.locked()
+    assert ctx.session.store.counts()["transactions"] > 0
+    assert command(client, "summary").status_code == 200
+    assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+
+
+def test_sync_read_only_handle_is_closed_during_sync(ctx: WebContext, db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    transactions: list[int] = []
+
+    def write_while_syncing() -> None:
+        # DuckDB refuses a read-write handle while this process still holds a read-only one on the same file.
+        with FinanceStore(db_path) as store:
+            transactions.append(store.counts()["transactions"])
+
+    monkeypatch.setattr(web, "run_sync", RecordingSync(during=write_while_syncing))
+    assert events(sync(client_for(ctx))) == [*RECORDED_EVENTS, {"type": "done", "ok": True}]
+    assert len(transactions) == 1
+    assert transactions[0] > 0
+    assert ctx.session.store.counts()["transactions"] == transactions[0]
+
+
+def test_sync_slash_command_in_chat_box(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    client = client_for(ctx)
+    ctx.transcript.append({"role": "user", "text": "q"})
+    assert events(chat(client, "/sync")) == [*RECORDED_EVENTS, {"type": "done", "ok": True}]
+    assert events(chat(client, " /SYNC "))[-1] == {"type": "done", "ok": True}
+    assert fake.forces == [False, False]
+    assert ctx.transcript == []
+    assert not ctx.lock.locked()
+    assert ctx.session.store.counts()["transactions"] > 0
+    monkeypatch.setattr(web, "run_sync", RecordingSync(1))
+    assert events(chat(client, "/sync"))[-1] == {"type": "done", "ok": False}
+
+
+def test_sync_client_disconnect_waits_for_worker_and_reopens_store(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = BlockingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    ctx.transcript.append({"role": "user", "text": "q"})
+    before = ctx.session.store
+    first_read = threading.Event()
+    outcome: dict[str, Any] = {}
+
+    def disconnecting_client() -> None:
+        # Read and close in the same thread, as a WSGI server does (the stream holds that thread's request context).
+        try:
+            response = sync(client_for(ctx), buffered=False)
+            outcome["first"] = json.loads(next(iter(response.response)))
+            first_read.set()
+            response.close()  # the client went away; this waits for the sync to finish
+            outcome["closed"] = True
+        except BaseException as exc:
+            outcome["error"] = exc
+            first_read.set()
+
+    client_thread = threading.Thread(target=disconnecting_client, daemon=True)
+    client_thread.start()
+    try:
+        assert first_read.wait(10)
+        assert outcome.get("first") == RECORDED_EVENTS[0]
+        assert fake.started.wait(10)
+        client_thread.join(timeout=0.5)
+        assert client_thread.is_alive()  # close() is still waiting for the worker
+        assert ctx.lock.locked()  # the abort did not give the lock back early
+        assert get(client_for(ctx), "/api/state").get_json()["busy"] is True
+        assert sync(client_for(ctx)).status_code == 409
+    finally:
+        fake.proceed.set()
+    client_thread.join(timeout=10)
+    assert not client_thread.is_alive()
+    assert "error" not in outcome
+    assert outcome["closed"] is True
+    assert not ctx.lock.locked()
+    assert ctx.session.store is not before
+    assert ctx.session.store.counts()["transactions"] > 0  # reopened read-only
+    assert ctx.transcript == []  # the post-sync refresh ran even though nobody was listening
+    assert events(chat(client_for(ctx), "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+
+
+def test_never_iterated_sync_response_never_starts_the_sync(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    environ = EnvironBuilder(
+        path="/api/sync",
+        method="POST",
+        json={"force": True},
+        headers=[("Host", HOST), ("Cookie", f"{COOKIE_NAME}={TOKEN}")],
+    ).get_environ()
+    before = ctx.session.store
+    body = create_app(ctx)(environ, lambda _status, _headers, _exc_info=None: lambda _data: None)
+    assert isinstance(body, ClosingIterator)
+    assert ctx.lock.locked()
+    body.close()
+    assert not ctx.lock.locked()
+    assert fake.forces == []
+    assert ctx.session.store is before
+    assert before.counts()["transactions"] > 0
+
+
+def test_sync_unexpected_exception_keeps_server_usable(
+    ctx: WebContext, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    def broken_sync(*_args: Any, **_kwargs: Any) -> int:
+        raise RuntimeError("sync bug")
+
+    monkeypatch.setattr(web, "run_sync", broken_sync)
+    client = client_for(ctx)
+    before = ctx.session.store
+    with caplog.at_level(logging.ERROR, logger="llmopenfinance.web"):
+        received = events(sync(client))
+    assert received == [{"type": "error", "text": t("web.internal_error")}, {"type": "done", "ok": False}]
+    assert any(record.exc_info for record in caplog.records)
+    assert not ctx.lock.locked()
+    assert ctx.session.store is not before
+    assert ctx.session.store.counts()["transactions"] > 0
+    assert events(chat(client, "Quanto gastei?"))[-1] == {"type": "done", "ok": True}
+
+
+def test_sync_failure_after_the_sync_reports_error_and_frees_lock(
+    ctx: WebContext, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    monkeypatch.setattr(web, "run_sync", RecordingSync())
+    monkeypatch.setattr(ctx.assistant, "refresh", _boom)
+    with caplog.at_level(logging.ERROR, logger="llmopenfinance.web"):
+        received = events(sync(client_for(ctx)))
+    assert received == [
+        *RECORDED_EVENTS,
+        {"type": "error", "text": t("web.internal_error")},
+        {"type": "done", "ok": False},
+    ]
+    assert any(record.exc_info for record in caplog.records)
+    assert not ctx.lock.locked()
+    assert ctx.session.store.counts()["transactions"] > 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"data": ""}, False),  # no body at all
+        ({"data": "null"}, False),
+        ({"data": "{}"}, False),
+        ({"data": '{"force": false}'}, False),
+        ({"data": '{"force": true}'}, True),
+        ({"data": '{"force": true, "other": 1}'}, True),
+    ],
+)
+def test_sync_force_reaches_run_sync(ctx: WebContext, monkeypatch: pytest.MonkeyPatch, kwargs: Any, expected: bool):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    response = post(client_for(ctx), "/api/sync", content_type="application/json", **kwargs)
+    assert events(response)[-1] == {"type": "done", "ok": True}
+    assert fake.forces == [expected]
+
+
+@pytest.mark.parametrize("data", ['{"force": "yes"}', '{"force": 1}', '{"force": null}', "[]", '"force"', "true"])
+def test_sync_force_validation(ctx: WebContext, monkeypatch: pytest.MonkeyPatch, data: str):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    response = post(client_for(ctx), "/api/sync", data=data, content_type="application/json")
+    assert response.status_code == 400
+    assert response.get_json() == {"error": t("web.bad_request")}
+    assert fake.forces == []
+    assert not ctx.lock.locked()
+
+
+def test_sync_requires_auth_and_json(ctx: WebContext, monkeypatch: pytest.MonkeyPatch):
+    fake = RecordingSync()
+    monkeypatch.setattr(web, "run_sync", fake)
+    before = ctx.session.store
+    assert sync(client_for(ctx, authenticated=False)).status_code == 401
+    client = client_for(ctx)
+    assert post(client, "/api/sync", data="{}", content_type="text/plain").status_code == 415
+    assert post(client, "/api/sync", data="{}").status_code == 415  # no content type at all
+    assert sync(client, {}, host="evil.example:8000").status_code == 400
+    malformed = post(client, "/api/sync", data="{not json", content_type="application/json")
+    assert malformed.status_code == 400
+    assert malformed.get_json() == {"error": t("web.bad_request")}
+    assert sync(client, {"pad": "x" * (64 * 1024)}).status_code == 413
+    assert get(client, "/api/sync").status_code == 405
+    assert fake.forces == []
+    assert ctx.session.store is before
+    assert not ctx.lock.locked()
 
 
 # ---------------------------------------------------------------------------
