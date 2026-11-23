@@ -240,6 +240,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "httpx" },
     { name = "ollama" },
+    { name = "rich" },
     { name = "typer" },
 ]
 
@@ -256,6 +257,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=2.0.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "ollama", specifier = ">=0.6.3" },
+    { name = "rich", specifier = ">=15.0.0" },
     { name = "typer", specifier = ">=0.29.2" },
 ]
 

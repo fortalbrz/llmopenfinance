@@ -21,6 +21,7 @@ dependencies = [
     "duckdb>=2.0.1",
     "httpx>=0.28.1",
     "ollama>=0.6.3",
+    "rich>=15.0.0",
     "typer>=0.29.2",
 ]
 

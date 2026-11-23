@@ -225,4 +225,7 @@ Open Finance (Pluggy) into a local database. Rules:
         'Examples: "Which subscriptions do I have?"  "How much do I spend per month on online shopping?"\n'
         '          "How can I improve my finances?"'
     ),
+    "ui.banner.provider": "Provider",
+    "ui.banner.model": "Model",
+    "ui.banner.language": "Language",
 }

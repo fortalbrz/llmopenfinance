@@ -229,4 +229,7 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
         'Exemplos: "Quais assinaturas eu tenho?"  "Quanto gasto por mês com compras online?"\n'
         '          "Como posso melhorar minhas finanças?"'
     ),
+    "ui.banner.provider": "Provedor",
+    "ui.banner.model": "Modelo",
+    "ui.banner.language": "Idioma",
 }
