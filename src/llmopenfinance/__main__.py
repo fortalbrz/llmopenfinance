@@ -6,7 +6,8 @@ data (Pluggy), cached in a local DuckDB database.
 
 Commands: ``chat`` (default), ``ask``, ``sync``, ``status``, ``connect``, ``items add|list|remove``.
 Structure follows ``apexmusic.__main__``: a global ``_state`` filled by the Typer callback,
-``_handle_*`` functions holding the logic (return exit codes) and thin ``@app.command`` wrappers.
+``_handle_*`` functions holding the logic (return exit codes) and thin ``@app.command`` wrappers. The chat/sync
+core shared with other front ends lives in :mod:`llmopenfinance.session`; this module renders its notices.
 Every user-visible text comes from the message catalog (``t("cli.*")`` / ``t("chat.*")``) in the language of
 ``LLMOPENFINANCE_LANG``, which is validated before the Typer app is built.
 """
@@ -35,6 +36,17 @@ from llmopenfinance.constants import (
     ENV_PROVIDER,
 )
 from llmopenfinance.i18n import format_date, get_language, t
+from llmopenfinance.session import (
+    BuildOptions,
+    ChatSession,
+    Factories,
+    Notice,
+    build_assistant,
+    has_pluggy_credentials,
+    parse_command,
+    run_command,
+    run_sync,
+)
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -151,10 +163,6 @@ def _llm(provider: str, model: str, *, think: bool = False) -> Any:
     return get_llm(provider, model, **kwargs)
 
 
-def _has_pluggy_credentials() -> bool:
-    return bool(os.environ.get(ENV_PLUGGY_CLIENT_ID) and os.environ.get(ENV_PLUGGY_CLIENT_SECRET))
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -182,8 +190,38 @@ def _open_store(*, read_only: bool = False) -> Any:
     return store
 
 
+def _factories() -> Factories:
+    """Bundle the factories, looked up in this module at call time so monkeypatched ones take effect.
+
+    Returns:
+        Factories: The current ``_llm``, ``_open_store`` and ``_pluggy_client``.
+    """
+    return Factories(llm=_llm, open_store=_open_store, pluggy_client=_pluggy_client)
+
+
 def _echo_dim(text: str) -> None:
     typer.secho(text, fg=typer.colors.BRIGHT_BLACK)
+
+
+_NOTICE_COLOURS = {
+    "ok": typer.colors.GREEN,
+    "warn": typer.colors.YELLOW,
+    "error": typer.colors.RED,
+    "dim": typer.colors.BRIGHT_BLACK,
+}
+
+
+def _render_notice(notice: Notice) -> None:
+    colour = _NOTICE_COLOURS.get(notice.level)
+    if colour is None:
+        typer.echo(notice.text)
+    else:
+        typer.secho(notice.text, fg=colour)
+
+
+def _render_notices(notices: tuple[Notice, ...]) -> None:
+    for notice in notices:
+        _render_notice(notice)
 
 
 def _print_item_result(result: Any) -> None:
@@ -207,68 +245,14 @@ def _run_sync(*, force: bool = False) -> int:
     Returns:
         int: Exit code (0 when at least one item synced or nothing to do).
     """
-    from llmopenfinance.pluggy import PluggyError
-    from llmopenfinance.sync import sync_all
-
-    if not _has_pluggy_credentials():
-        typer.secho(
-            t("cli.sync.no_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET),
-            fg=typer.colors.RED,
-        )
-        return 1
-    import duckdb
-
-    try:
-        store = _open_store()
-    except duckdb.IOException as exc:
-        typer.secho(t("cli.sync.db_locked", error=exc), fg=typer.colors.YELLOW)
-        return 1
-    with store:
-        if not store.list_items():
-            typer.echo(t("cli.sync.no_items"))
-            return 0
-        try:
-            client = _pluggy_client()
-            client.authenticate()
-        except (PluggyError, ValueError) as exc:
-            typer.secho(t("cli.sync.auth_failed", error=exc), fg=typer.colors.RED)
-            return 1
-        typer.echo(t("cli.sync.start"))
-        try:
-            report = sync_all(client, store, force=force, on_item=_print_item_result)
-        finally:
-            client.close()
-    typer.echo(t("cli.sync.done", ok=report.n_success, failed=report.n_failed))
-    return 0 if report.n_success or not report.n_total else 1
+    return run_sync(_factories(), force=force, notify=_render_notice, on_item=_print_item_result)
 
 
-class _ChatSession:
-    """Holds the read-only store and lets ``/sync`` close/reopen it (DuckDB allows one RW handle)."""
-
-    def __init__(self) -> None:
-        self.store = _open_store(read_only=True)
-
-    def connection(self) -> Any:
-        return self.store.con
-
-    def snapshot(self) -> str:
-        from llmopenfinance.analytics import build_snapshot
-
-        return build_snapshot(self.store.con)
-
-    def resync(self, *, force: bool = False) -> int:
-        self.store.close()
-        try:
-            return _run_sync(force=force)
-        finally:
-            self.store = _open_store(read_only=True)
-
-    def close(self) -> None:
-        self.store.close()
+_ChatSession = ChatSession
 
 
-def _build_assistant(session: _ChatSession, *, think: bool, enable_sql: bool | None) -> Any:
-    """Create the LLM backend + tools + assistant, verifying the LLM connection.
+def _build_assistant(session: ChatSession, *, think: bool, enable_sql: bool | None) -> Any:
+    """Create the LLM backend + tools + assistant, showing the connection check and any error.
 
     Args:
         session: Chat session (read-only store).
@@ -278,27 +262,15 @@ def _build_assistant(session: _ChatSession, *, think: bool, enable_sql: bool | N
     Returns:
         Any: ``FinanceAssistant`` or ``None`` when the LLM is unreachable.
     """
-    from llmopenfinance.agent import FinanceAssistant
-    from llmopenfinance.tools import ToolRegistry
-
-    try:
-        llm = _llm(_state.provider, _state.model, think=think)
-    except ValueError as exc:
-        typer.secho(str(exc), fg=typer.colors.RED)
-        return None
-    typer.echo(t("cli.llm.verifying", provider=llm.provider, model=llm.model))
-    if not llm._verify_connection():
-        typer.secho(t("cli.llm.unreachable", provider=llm.provider, model=llm.model), fg=typer.colors.RED)
-        if llm.provider == "ollama":
-            typer.echo(t("cli.llm.ollama_hint", model=llm.model))
-        else:
-            typer.echo(t("cli.llm.claude_hint"))
-        return None
-    if llm.provider == "claude":
-        _echo_dim(t("cli.llm.privacy"))
-    sql = enable_sql if enable_sql is not None else llm.provider == "claude"
-    registry = ToolRegistry(session.connection, enable_sql=sql)
-    return FinanceAssistant(llm, registry, session.snapshot)
+    build = build_assistant(
+        _factories(),
+        session,
+        provider=_state.provider,
+        model=_state.model,
+        options=BuildOptions(think=think, enable_sql=enable_sql),
+    )
+    _render_notices(build.notices)
+    return build.assistant
 
 
 def _render_answer(assistant: Any, question: str) -> bool:
@@ -340,7 +312,7 @@ def _help_text() -> str:
     return t("chat.help")
 
 
-def _process_chat_cmd(user_input: str, assistant: Any, session: _ChatSession) -> bool | None:
+def _process_chat_cmd(user_input: str, assistant: Any, session: ChatSession) -> bool | None:
     """Dispatch a special chat command.
 
     Args:
@@ -352,70 +324,17 @@ def _process_chat_cmd(user_input: str, assistant: Any, session: _ChatSession) ->
         ``True`` if a command was handled and the loop should continue, ``False`` if the user wants
         to exit, ``None`` if the input should go to the assistant.
     """
-    command = user_input.lower()
-    if command in EXIT_COMMANDS:
+    command = parse_command(user_input)
+    if command is None:
+        return None
+    if command == "exit":
         typer.echo("\n" + t("chat.goodbye"))
         return False
-    handler = _CHAT_COMMANDS.get(command)
-    if handler is None:
-        return None
-    handler(assistant, session)
+    _render_notices(run_command(command, assistant, session, _run_sync))
     return True
 
 
-def _cmd_reset(assistant: Any, _session: _ChatSession) -> None:
-    assistant.refresh()
-    typer.echo(t("chat.reset"))
-
-
-def _cmd_help(_assistant: Any, _session: _ChatSession) -> None:
-    typer.echo(_help_text())
-
-
-def _cmd_summary(_assistant: Any, session: _ChatSession) -> None:
-    typer.echo(session.snapshot())
-
-
-def _cmd_sync(assistant: Any, session: _ChatSession) -> None:
-    code = session.resync()
-    assistant.refresh()
-    if code == 0:
-        typer.echo(t("chat.sync_ok"))
-    else:
-        typer.secho(t("chat.sync_failed"), fg=typer.colors.YELLOW)
-
-
-def _cmd_history(assistant: Any, _session: _ChatSession) -> None:
-    history = assistant.chat.get_history()
-    if not history:
-        typer.echo(t("chat.history_empty"))
-    for i, msg in enumerate(history, 1):
-        content = msg.get("content")
-        text = content if isinstance(content, str) else str(content)
-        snippet = text[:100] + ("…" if len(text) > 100 else "")
-        typer.echo(f"{i}. [{msg['role'].upper()}] {snippet}")
-
-
-# The aliases of both languages are accepted in either; only the help text names the current language's forms.
-EXIT_COMMANDS = frozenset({"sair", "quit", "exit", "bye", "q", "/sair", "/exit", "/quit"})
-_CHAT_COMMANDS: dict[str, Callable[[Any, _ChatSession], None]] = {
-    "/reset": _cmd_reset,
-    "reset": _cmd_reset,
-    "/ajuda": _cmd_help,
-    "/help": _cmd_help,
-    "ajuda": _cmd_help,
-    "help": _cmd_help,
-    "/resumo": _cmd_summary,
-    "/summary": _cmd_summary,
-    "/sync": _cmd_sync,
-    "/historico": _cmd_history,
-    "/history": _cmd_history,
-    "historico": _cmd_history,
-    "history": _cmd_history,
-}
-
-
-def _handle_input(user_input: str, assistant: Any, session: _ChatSession) -> bool:
+def _handle_input(user_input: str, assistant: Any, session: ChatSession) -> bool:
     """Handle one line typed by the user.
 
     Args:
@@ -435,7 +354,7 @@ def _handle_input(user_input: str, assistant: Any, session: _ChatSession) -> boo
     return result is not False
 
 
-def _chat_loop(assistant: Any, session: _ChatSession, prompt: Callable[[str], str] = typer.prompt) -> int:
+def _chat_loop(assistant: Any, session: ChatSession, prompt: Callable[[str], str] = typer.prompt) -> int:
     """Run the interactive chat loop until the user exits.
 
     Args:
@@ -469,7 +388,7 @@ def _chat_loop(assistant: Any, session: _ChatSession, prompt: Callable[[str], st
 def _maybe_sync(*, sync: bool) -> None:
     if not sync:
         return
-    if not _has_pluggy_credentials():
+    if not has_pluggy_credentials():
         _echo_dim(t("cli.sync.skipped_no_credentials"))
         return
     _run_sync()
@@ -487,7 +406,7 @@ def _handle_chat(*, sync: bool = True, think: bool = False, enable_sql: bool | N
         int: Exit code.
     """
     _maybe_sync(sync=sync)
-    session = _ChatSession()
+    session = _ChatSession(_open_store)
     try:
         assistant = _build_assistant(session, think=think, enable_sql=enable_sql)
         if assistant is None:
@@ -513,7 +432,7 @@ def _handle_ask(question: str, *, sync: bool = False, enable_sql: bool | None = 
         int: Exit code.
     """
     _maybe_sync(sync=sync)
-    session = _ChatSession()
+    session = _ChatSession(_open_store)
     try:
         assistant = _build_assistant(session, think=False, enable_sql=enable_sql)
         if assistant is None:
@@ -560,7 +479,7 @@ def _handle_items_add(item_ids: list[str], *, verify: bool = True) -> int:
     from llmopenfinance.pluggy import PluggyError
 
     failed = 0
-    client = _pluggy_client() if verify and _has_pluggy_credentials() else None
+    client = _pluggy_client() if verify and has_pluggy_credentials() else None
     with _open_store() as store:
         for item_id in item_ids:
             if client is not None:
@@ -658,7 +577,7 @@ def _handle_connect(*, sandbox: bool = False, sync: bool = True) -> int:
     """
     from llmopenfinance.pluggy import PluggyError
 
-    if not _has_pluggy_credentials():
+    if not has_pluggy_credentials():
         typer.secho(
             t("cli.connect.missing_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET),
             fg=typer.colors.RED,
