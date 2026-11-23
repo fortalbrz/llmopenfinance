@@ -6,12 +6,15 @@ interactive terminal when ``NO_COLOR`` is unset, and plain text, with no style c
 scripts and tests that capture it keep working.
 
 Text handed to a helper (model answers, merchant names, item ids, ...) is data. It is never parsed as Rich markup
-or emoji: styled output wraps it in :class:`rich.text.Text`, plain output writes it as raw segments.
+or emoji: styled output wraps it in :class:`rich.text.Text`, plain output writes it as raw segments. It is also
+stripped of terminal escape sequences (:func:`_clean`), so third-party text cannot drive the user's terminal or
+corrupt piped output.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -46,6 +49,11 @@ __all__ = [
 
 _APP_NAME = "finassist"
 _MAX_TOOL_ARGS = 120
+# CSI sequences: the very pattern ``typer.echo`` / ``click.unstyle`` strip on a non-terminal, which keeps plain
+# output byte-identical to the old echo. (click is vendored inside typer, so it is not importable by itself.)
+_CSI = re.compile(r"\x1b\[[;?0-9]*[a-zA-Z]")
+# OSC sequences (window title, hyperlinks, ...): ``ESC ]``, a payload, then BEL or ``ESC \``.
+_OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _LIVE_REFRESHES_PER_SECOND = 10
 
 THEME = Theme(
@@ -91,6 +99,25 @@ def _styled() -> bool:
     return interactive() and not os.environ.get("NO_COLOR")
 
 
+def _clean(text: str) -> str:
+    """Remove terminal escape sequences from data before it is printed or handed to a Rich renderable.
+
+    Model answers, merchant names or item ids are third-party text. Left alone, an escape sequence in them would
+    reach the user's terminal (clear the screen, retitle the window, ...) or corrupt piped output. CSI sequences
+    go first, exactly as ``typer.echo`` strips them off a terminal, then OSC sequences, then any ESC left over
+    (a lone or truncated sequence). Text without an ESC character is returned unchanged.
+
+    Args:
+        text: Data to sanitise.
+
+    Returns:
+        str: ``text`` without escape sequences and without the ESC character.
+    """
+    if "\x1b" not in text:
+        return text
+    return _OSC.sub("", _CSI.sub("", text)).replace("\x1b", "")
+
+
 def _say(text: str, *, style: str = "", end: str = "\n") -> None:
     """Print ``text`` verbatim, styled only when :func:`_styled` allows it.
 
@@ -99,10 +126,11 @@ def _say(text: str, *, style: str = "", end: str = "\n") -> None:
     unwrapped (``soft_wrap=True``) so long answers are never cut at the console width.
 
     Args:
-        text: Text to print; never parsed as markup or emoji.
+        text: Text to print; never parsed as markup or emoji, and cleaned of escape sequences.
         style: Theme style name for the styled rendering.
         end: What to print after ``text``.
     """
+    text = _clean(text)
     if _styled():
         console.print(Text(text, style=style), end=end)
     else:
@@ -168,8 +196,9 @@ def banner(provider: str, model: str, language: str, version: str) -> None:
         return
     grid = Table.grid(padding=(0, 2))
     for label, value in details:
-        grid.add_row(Text(label, style="dim"), Text(value))
-    console.print(Panel.fit(grid, title=Text(title, style="accent"), title_align="left", border_style="accent"))
+        grid.add_row(Text(label, style="dim"), Text(_clean(value)))
+    panel_title = Text(_clean(title), style="accent")
+    console.print(Panel.fit(grid, title=panel_title, title_align="left", border_style="accent"))
 
 
 def _parse(events: Iterable[AssistantEvent]) -> Iterator[tuple[_Kind, str]]:
@@ -277,7 +306,8 @@ def _render_live(events: Iterable[AssistantEvent]) -> bool:
     view = _LiveView()
     with Live(view, console=console, refresh_per_second=_LIVE_REFRESHES_PER_SECOND) as live:
         try:
-            for kind, text in _parse(events):
+            for kind, raw in _parse(events):
+                text = _clean(raw)  # the Markdown and Text renderables below would pass escape sequences through
                 view.waiting = False
                 if kind == "tool":
                     view.tools = (*view.tools, text)

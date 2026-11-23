@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable, Iterator
 
 import pytest
+import typer
 from rich.console import Console
 from rich.live import Live
 
@@ -352,6 +353,77 @@ def test_render_answer_does_not_wrap_or_alter_long_text_off_a_terminal(plain):
     ui.render_answer([TextDelta(chunk) for chunk in chunks])
     # The label, the raw stream (no wrapping at 80 columns, tabs, \r and trailing blanks kept), the closing blank line.
     assert plain.getvalue() == "\nAssistente: " + "".join(chunks) + "\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Escape sequences in data (model text, merchant names, item ids) are removed on every path
+# ---------------------------------------------------------------------------
+
+ESCAPES = [
+    pytest.param("a\x1b[31mred\x1b[0m\x1b[2Jb", "aredb", id="csi"),
+    pytest.param("a\x1b]0;title\x07b", "ab", id="osc-bel"),
+    pytest.param("a\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\b", "alinkb", id="osc-st"),
+    pytest.param("a\x1bb", "ab", id="lone-esc"),
+    pytest.param("a\x1b[2", "a[2", id="truncated-csi"),
+    pytest.param("a\x1b]0;ti\x1b[5mtle\x07b", "ab", id="csi-inside-osc"),
+]
+
+
+@pytest.mark.parametrize(("raw", "clean"), ESCAPES)
+def test_escape_sequences_in_data_are_removed_off_a_terminal(plain, raw, clean):
+    ui.show_notice(Notice("info", raw))
+    ui.item_result(ItemResult(raw, ok=False, error=raw, warnings=(raw,)))
+    ui.banner(raw, raw, raw, raw)
+    assert plain.getvalue() == (
+        f"{clean}\n"
+        f"  ✗ {clean}: {clean}\n"
+        f"    ! {clean}\n"
+        f"finassist {clean}\n"
+        f"Provedor: {clean}, Modelo: {clean}, Idioma: {clean}\n"
+    )
+
+
+@pytest.mark.parametrize(("raw", "clean"), ESCAPES)
+def test_escape_sequences_in_an_answer_are_removed_off_a_terminal(plain, raw, clean):
+    ok = ui.render_answer([TextDelta(raw), tool_event(raw, q=raw), AssistantError(raw)])
+    # The tool arguments go through ``repr``, which already writes an ESC as the four characters ``\x1b``.
+    assert plain.getvalue() == (f"\nAssistente: {clean}\n  ↳ consultando {clean}(q={raw!r})\n\n[erro] {clean}\n\n\n")
+    assert ok is False
+
+
+def test_an_escape_sequence_split_across_deltas_leaves_no_escape(plain):
+    ui.render_answer([TextDelta("a\x1b[3"), TextDelta("1mb")])
+    assert "\x1b" not in plain.getvalue()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "plain text",
+        TRICKY,
+        "tab\tcr\r\nend  ",
+        "a\x1b[31mred\x1b[0m\x1b[2Jb",
+        "\x1b[1;5;38mtext\x1b[K",
+    ],
+)
+def test_plain_output_matches_typer_echo_for_csi_and_escape_free_data(plain, data):
+    expected = io.StringIO()
+    typer.echo(data, file=expected)  # not a terminal: click strips CSI sequences and nothing else
+    ui.show_notice(Notice("info", data))
+    assert plain.getvalue() == expected.getvalue()
+
+
+def test_escape_sequences_in_data_never_reach_a_terminal(tty):
+    raw = "a\x1b[2Jb\x1b]0;title\x07c\x1b[5md\x1b]8;;http://example.com\x1b\\e\x1bf"
+    ui.show_notice(Notice("warn", raw))
+    ui.item_result(ItemResult(raw, ok=False, error=raw, warnings=(raw,)))
+    ui.banner(raw, raw, raw, raw)
+    ui.render_answer([TextDelta(raw), tool_event(raw), AssistantError(raw)])
+    out = tty.getvalue()
+    for sequence in ("\x1b[2J", "\x1b[5m", "\x1b]0;", "\x1b]8;", "\x1bf"):
+        assert sequence not in out
+    assert "\x1b" not in strip_ansi(out)  # whatever is left is the CSI style codes Rich emits itself
+    assert strip_ansi(out).count("abcdef") >= 8  # the cleaned text is still shown (notice, item, banner, answer, ...)
 
 
 # ---------------------------------------------------------------------------
