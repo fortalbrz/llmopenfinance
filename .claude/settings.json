@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.pluggy.ai)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:docs.ollama.com)",
+      "WebFetch(domain:ollama.com)",
+      "mcp__plugin_context7_context7__query-docs",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "Bash(ollama show *)",
+      "Bash(ollama list)",
+      "PowerShell(ollama show *)",
+      "PowerShell(ollama list)"
+    ]
+  }
+}
