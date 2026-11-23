@@ -44,3 +44,27 @@ installments). They don't count toward item limits and are deleted after 30 days
 3. Add tests in `test_analytics.py` (exact values on the synthetic dataset) and add the tool to
    `test_tools.py::test_every_tool_runs`.
 4. Keep tool lists and descriptions static. Claude's prompt cache depends on a stable prefix.
+
+
+## Web server notes
+
+The `web` extra (`uv sync --extra web`, or `pip install "llmopenfinance[web]"`) installs Flask 3.1.3 and
+Waitress 3.0.2 (versions pinned in `uv.lock`). Both are also in the dev group so the tests can use them.
+
+Streaming check: Waitress does flush chunked NDJSON lines as the application yields them. A throwaway Flask app
+(`POST /slow`, `application/x-ndjson`, five JSON lines yielded one second apart with `time.sleep(1)` inside a
+`flask.stream_with_context` generator) was served with `waitress.serve(app, host="127.0.0.1", port=8765)` and read with:
+
+```bash
+curl -sN -X POST http://127.0.0.1:8765/slow | while IFS= read -r l; do date +%T.%N | cut -c1-12; echo "$l"; done
+```
+
+Observed arrival times: 00:17:01.680, 00:17:02.648, 00:17:03.645, 00:17:04.650 and 00:17:05.645, so the five lines
+arrived about one second apart, not all at the end. The response headers were `HTTP/1.1 200 OK`,
+`Transfer-Encoding: chunked` and `Server: waitress`. The chat page can therefore show answers progressively.
+The page also works if a proxy or client buffers the stream; the answer then appears all at once.
+
+Client disconnect: `curl --max-time 2.5` was stopped after three lines. The server logged nothing and the next
+request, sent immediately, was served normally with all five lines, so an abandoned stream does not block the
+server. (The spike's generator has no lock; releasing the chat lock and rolling back the history on disconnect
+is the job of the web code and is tested separately.)
