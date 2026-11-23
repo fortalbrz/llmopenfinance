@@ -2,7 +2,7 @@
 
 ## Global options
 
-These go **before** the command, for example `finassist --provider ollama chat`.
+These go **before** the command, for example `llmopenfinance --provider ollama chat`.
 
 | Option | Env var | Default | Meaning |
 |---|---|---|---|
@@ -24,7 +24,7 @@ These go **before** the command, for example `finassist --provider ollama chat`.
 | `LLMOPENFINANCE_LANG` | Language of the whole application: `pt-BR` (default) or `en`. See [Language](#language) |
 | `NO_COLOR` | Any non-empty value turns off colours, panels and tables, even on a terminal. See [Look and feel](#look-and-feel) |
 
-`finassist --help` lists the commands in three groups (Chat: `chat`, `server`, `ask`; Data: `sync`, `status`; Connections: `connect`,
+`llmopenfinance --help` lists the commands in three groups (Chat: `chat`, `server`, `ask`; Data: `sync`, `status`; Connections: `connect`,
 `items`) and ends with a list of the main variables: `LLMOPENFINANCE_PROVIDER`, `LLMOPENFINANCE_DB`,
 `LLMOPENFINANCE_LANG`, `PLUGGY_USERNAME`, `PLUGGY_PASSWORD` and `PLUGGY_ITEM_IDS`.
 
@@ -35,14 +35,14 @@ The terminal front end is styled with [Rich](https://rich.readthedocs.io), but o
 | | On an interactive terminal | Piped, redirected or `NO_COLOR` set |
 |---|---|---|
 | Messages | Coloured by meaning: green for success, yellow for warnings, red for errors, dim for side notes | Plain text, no escape codes |
-| `chat` start | A banner panel with the app version, provider, model and language | Two plain lines: `finassist <version>` and `Provider: …, Model: …, Language: …` |
+| `chat` start | A banner panel with the app version, provider, model and language | Two plain lines: `llmopenfinance <version>` and `Provider: …, Model: …, Language: …` |
 | Answers | Markdown in a titled panel that grows while it streams, with a spinner line for each tool call | The answer streamed as plain text, one status line per tool call |
 | `status` | A table of the local data counts (`transactions=…`) and a table of the connections (ID, connector, status, consent) | Lines: `Dados: k=v, …` and `- id  connector  status=…  consentimento até …` |
 | `items list` | A table (ID, connector, status) | Lines: `id  connector  status` |
 | `--help` | Grouped panels and the environment-variable epilog | The same text, without colours |
 
-- The plain output is the wording and the bytes `finassist` always printed, so `finassist ask "…" > out.txt` and
-  `finassist status | grep …` keep working. The banner is shown only by `chat`: `ask`, `sync`, `status`, `items` and
+- The plain output is the wording and the bytes `llmopenfinance` always printed, so `llmopenfinance ask "…" > out.txt` and
+  `llmopenfinance status | grep …` keep working. The banner is shown only by `chat`: `ask`, `sync`, `status`, `items` and
   `connect` print nothing extra.
 - Tables never cut a cell. The ID column folds onto several lines when the terminal is narrow; if the other columns leave
   it fewer than 12 columns (a terminal narrower than roughly 70 columns for `status`), each item is printed as one plain
@@ -63,7 +63,7 @@ system prompt (so the model answers in that language) and the tool descriptions.
 | `en`, `en-US`, `en_GB` | English | `R$ 1,234.56` | `YYYY-MM-DD` |
 
 - Case and surrounding spaces are ignored, and `_` counts as `-`. Only the first part (`pt` or `en`) matters.
-- Any other value is an error: `finassist` prints a one-line message that names the supported values on stderr and exits
+- Any other value is an error: `llmopenfinance` prints a one-line message that names the supported values on stderr and exits
   with status 2.
 - The language is fixed for the whole run. Stored data is never translated: category labels such as `Alimentação`,
   Pluggy values and transaction descriptions stay as they are.
@@ -72,7 +72,7 @@ system prompt (so the model answers in that language) and the tool descriptions.
 
 ```powershell
 $env:LLMOPENFINANCE_LANG = "en"
-uv run finassist --help
+uv run llmopenfinance --help
 ```
 
 ## Commands
@@ -80,7 +80,7 @@ uv run finassist --help
 ### `chat` (default)
 
 ```text
-finassist [GLOBAL OPTIONS] chat [--sync/--no-sync] [--think] [--sql/--no-sql]
+llmopenfinance [GLOBAL OPTIONS] chat [--sync/--no-sync] [--think] [--sql/--no-sql]
 ```
 
 - `--no-sync` skips the Pluggy sync at start-up. It is skipped automatically when the Pluggy credentials are missing.
@@ -104,7 +104,7 @@ In-chat commands:
 ### `server`
 
 ```text
-finassist [GLOBAL OPTIONS] server [--host HOST] [--port PORT] [--threads N] [--browser/--no-browser]
+llmopenfinance [GLOBAL OPTIONS] server [--host HOST] [--port PORT] [--threads N] [--browser/--no-browser]
                                   [--sync/--no-sync] [--think] [--sql/--no-sql]
 ```
 
@@ -112,7 +112,7 @@ Serves the chat as a local web page. It needs the optional `web` extra (Flask an
 
 ```powershell
 uv sync --extra web
-```
+llmopenfinance
 
 Without it, `server` prints the install line and exits with status 1 before doing anything else. The global
 `--provider`, `--model` and `--db` options apply as in `chat`.
@@ -126,7 +126,7 @@ Without it, `server` prints the install line and exits with status 1 before doin
 | `--sync/--no-sync` | on | Sync Pluggy data first; skipped automatically when the credentials are missing (as in `chat`) |
 | `--think` | off | Ollama thinking mode (as in `chat`) |
 | `--sql/--no-sql` | on for Claude, off for Ollama | Expose the guarded `run_sql` tool (as in `chat`) |
-
+llmopenfinance
 Start-up goes from the cheapest check to the most expensive: the `web` extra, the optional sync, the LLM connection
 check (the same messages as `chat`), then the server. It prints the address and, once, the secret token inside it:
 
@@ -138,7 +138,7 @@ For a wildcard host (`0.0.0.0`, `::`) the printed URL uses `127.0.0.1`; IPv6 lit
 no banner (that belongs to `chat`). Ctrl+C stops the server and exits with status 0. A port that is already in use (or
 any other bind error) prints one line naming the host and port, and exits with status 1.
 
-The page has the same commands as the chat as buttons (`/help`, `/summary`, `/sync`, `/reset`, `/history`), a sync that
+llmopenfinancehas the same commands as the chat as buttons (`/help`, `/summary`, `/sync`, `/reset`, `/history`), a sync that
 shows per-item progress, and a status line. Slash commands typed in the box work too; `exit` only explains how to leave.
 
 **Security**
@@ -146,9 +146,9 @@ shows per-item progress, and a status line. Slash commands typed in the box work
 - **Loopback by default.** The server is reachable only from this computer. A `--host` outside loopback serves your
   financial data over **plain HTTP**, unencrypted, and `server` prints a prominent warning. For a wildcard bind
   (`0.0.0.0` or `::`), the client's `Host` header cannot be predicted, so the check below is skipped and the token alone
-  protects access; the warning says so. Use such a bind only on a network you trust.
-- **Per-launch token.** A random secret is created on every start and printed once, in the URL. It is never written to
-  a log. Opening the URL sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`, so the token leaves the
+llmopenfinances access; the warning says so. Use such a bind only on a network you trust.
+llmopenfinanceaunch token.** A random secret is created on every start and printed once, in the URL. It is never written to
+llmopenfinanceOpening the URL sets an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`, so the token leaves the
   address bar; every other route needs the cookie. Restarting the server invalidates old links.
 - **`Host` check.** Requests whose `Host` header is not `localhost`, `127.0.0.1`, `[::1]` or the bound `--host` (with the
   port) are refused, which blocks DNS-rebinding attacks. `POST` routes accept only `application/json` bodies of up to

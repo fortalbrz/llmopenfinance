@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-llmopenfinance = "llmopenfinance.__main__:main"
+llmopenfinancenance = "llmopenfinance.__main__:main"
 finassist = "llmopenfinance.__main__:main"
 
 [project.optional-dependencies]

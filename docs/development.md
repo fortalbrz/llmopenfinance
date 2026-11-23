@@ -15,8 +15,8 @@ filled with the synthetic test dataset. This never touches your real bank data:
 ```powershell
 uv run python -c "from tests.conftest import populate; from llmopenfinance.store import FinanceStore; s = FinanceStore('smoke.duckdb'); populate(s); s.close()"
 
-uv run finassist --db smoke.duckdb ask "Quais assinaturas eu tenho?"
-uv run finassist --provider ollama --db smoke.duckdb ask "Liste as 3 maiores despesas de novembro de 2026."
+uv run llmopenfinance --db smoke.duckdb ask "Quais assinaturas eu tenho?"
+uv run llmopenfinance --provider ollama --db smoke.duckdb ask "Liste as 3 maiores despesas de novembro de 2026."
 ```
 
 Expected results for the second question: R$ 300,00 (Loja de Móveis), R$ 250,00 (Mercado Livre) and R$ 210,00
@@ -27,7 +27,7 @@ Expected results for the second question: R$ 300,00 (Loja de Móveis), R$ 250,00
 ## Pluggy sandbox (real API, fake bank)
 
 ```powershell
-uv run finassist --db sandbox.duckdb connect --sandbox   # choose "Pluggy Bank", user-ok / password-ok
+uv run llmopenfinance --db sandbox.duckdb connect --sandbox   # choose "Pluggy Bank", user-ok / password-ok
 ```
 
 Sandbox items include a checking account (17 transactions, recurring bills) and a credit card (subscriptions and

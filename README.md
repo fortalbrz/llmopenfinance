@@ -1,12 +1,12 @@
 # llmopenfinance
 
-Talk to your own bank data from the terminal. `finassist` is a console chat with an LLM financial assistant
+Talk to your own bank data from the terminal. `llmopenfinance` is a console chat with an LLM financial assistant
 (**Claude** or a local **Ollama** model). It answers questions about your accounts, credit cards, investments and
 loans, using data pulled through Brazilian **Open Finance** via [Pluggy](https://pluggy.ai) and cached in a local
 **DuckDB** database.
 
 ```text
-$ finassist
+$ llmopenfinance
 Assistente financeiro pronto. Comandos: /ajuda  /resumo (dados enviados ao modelo)  /sync  /reset  /historico  sair
 ======================================================================
 
@@ -42,24 +42,24 @@ $env:PLUGGY_PASSWORD = "<clientSecret>"
 $env:ANTHROPIC_API_KEY = "<key>"          # only for the default Claude provider
 
 # 3. Connect your banks (MeuPluggy, free for personal use) — see docs/pluggy-setup.md
-uv run finassist items add <item-id>       # item ids copied from the Pluggy dashboard
-#   or: uv run finassist connect           # opens the Pluggy Connect widget in your browser
+uv run llmopenfinance items add <item-id>       # item ids copied from the Pluggy dashboard
+#   or: uv run llmopenfinance connect           # opens the Pluggy Connect widget in your browser
 
 # 4. Chat (syncs first)
-uv run finassist                           # Claude (claude-sonnet-5-5)
-uv run finassist --provider ollama         # 100% local (qwen3.5:9b)
+uv run llmopenfinance                           # Claude (claude-sonnet-5-5)
+uv run llmopenfinance --provider ollama         # 100% local (qwen3.5:9b)
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `finassist` / `finassist chat` | Interactive chat. Syncs first; skip with `--no-sync` |
-| `finassist server [--host H] [--port N]` | Serves the same chat as a local web page (needs `uv sync --extra web`) |
-| `finassist ask "pergunta"` | Asks one question and exits |
-| `finassist sync [--force]` | Downloads accounts, transactions, card bills, investments and loans |
-| `finassist status` | Shows connections, consent expiry dates and local row counts |
-| `finassist connect [--sandbox]` | Connects accounts through the Pluggy Connect widget on a local page |
+| `llmopenfinance` / `llmopenfinance chat` | Interactive chat. Syncs first; skip with `--no-sync` |
+| `llmopenfinance server [--host H] [--port N]` | Serves the same chat as a local web page (needs `uv sync --extra web`) |
+| `llmopenfinance ask "pergunta"` | Asks one question and exits |
+| `llmopenfinance sync [--force]` | Downloads accounts, transactions, card bills, investments and loans |
+| `llmopenfinance status` | Shows connections, consent expiry dates and local row counts |
+| `llmopenfinance connect [--sandbox]` | Connects accounts through the Pluggy Connect widget on a local page |
 | `finassist items add/list/remove` | Manages the registered Pluggy item ids |
 
 Global options: `--provider claude|ollama`, `--model <id>`, `--db <file>`, `-v`.
@@ -72,7 +72,7 @@ the assistant's system prompt and its answers. Pick one with the `LLMOPENFINANCE
 no command-line option for it.
 
 ```powershell
-$env:LLMOPENFINANCE_LANG = "en"    # or "pt-BR"
+$env:LLllmopenfinanceNCE_LANG = "en"    # or "pt-BR"
 uv run finassist
 ```
 

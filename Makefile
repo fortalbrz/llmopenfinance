@@ -26,7 +26,7 @@ help: ## Show this help
 	@echo   format     Auto-format and auto-fix lint (ruff format, ruff check --fix)
 	@echo   typecheck  pyrefly check
 	@echo   check      Full CI order: format, lint fix, typecheck, tests
-	@echo   run        Run the finassist CLI; pass arguments with ARGS="..."
+	@echo   run        Run the llmopenfinance CLI; pass arguments with ARGS="..."
 	@echo   clean      Remove build artifacts and caches (keeps .venv)
 	@echo   distclean  clean + remove .venv
 
@@ -56,7 +56,7 @@ check: format typecheck ## CI failure fix order: format -> lint fix -> pyrefly -
 	$(UV) run pytest -x -m "not live"
 
 run: ## Run the main CLI, e.g. make run ARGS="--provider ollama"
-	$(UV) run finassist $(ARGS)
+	$(UV) run llmopenfinance $(ARGS)
 
 clean: ## Remove build artifacts and caches
 	$(UV) run --no-project python -c "import pathlib, shutil; r = pathlib.Path('.'); [shutil.rmtree(p, ignore_errors=True) for g in '$(CLEAN_DIRS)'.split() for p in r.glob(g) if p.is_dir()]; [p.unlink() for g in '$(CLEAN_FILES)'.split() for p in r.glob(g) if p.is_file()]"

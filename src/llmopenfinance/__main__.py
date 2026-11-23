@@ -105,7 +105,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 
 app = typer.Typer(
-    name="finassist",
+    name="llmopenfinance",
     help=t("cli.app.help"),
     epilog=t(
         "cli.epilog",

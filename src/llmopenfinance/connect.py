@@ -9,7 +9,7 @@ By default the widget is restricted to the **MeuPluggy** connector (free persona
 ``sandbox=True`` shows Pluggy's sandbox banks for testing (user ``user-ok`` / ``password-ok``).
 
 If this flow does not work for your account, use the documented manual path instead: connect in
-dashboard.pluggy.ai → Demo → MeuPluggy, copy the item id and run ``finassist items add <id>``.
+dashboard.pluggy.ai → Demo → MeuPluggy, copy the item id and run ``llmopenfinance items add <id>``.
 """
 
 from __future__ import annotations

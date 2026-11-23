@@ -4,7 +4,7 @@ Date: 2026-11-22 · Branch: `feat/finance-assistant` · Status: draft for approv
 
 ## 1. Intent
 
-`finassist` is a console chat with an LLM financial assistant over the user's Open Finance (Pluggy) data, cached in
+`llmopenfinance` is a console chat with an LLM financial assistant over the user's Open Finance (Pluggy) data, cached in
 local DuckDB. Three changes were requested together:
 
 1. A colourful, elegant Typer CLI.
@@ -28,7 +28,7 @@ nicer daily-use CLI, a second front end for the same assistant, and a tool usabl
   only where moving code makes that unavoidable (see 5.3 for the seams that are kept so that it is rarely needed).
 - G4. The CLI is restyled with Rich: banner, themed status lines, tables, grouped help, spinner during tool calls,
   and the assistant's answer rendered as Markdown.
-- G5. `finassist server` serves a chat page with the same chat functionality as the CLI chat: ask questions with
+- G5. `llmopenfinance server` serves a chat page with the same chat functionality as the CLI chat: ask questions with
   streamed answers and visible tool calls, plus the `help`, `summary`, `sync`, `reset` and `history` commands.
 - G6. All of it stays inside the project's rules: `uv` only, ruff and pyrefly clean, tests offline, coverage at
   or above 90%.
@@ -46,7 +46,7 @@ nicer daily-use CLI, a second front end for the same assistant, and a tool usabl
 
 **Anti-goals** (failure even if it technically works)
 
-- A1. Colour or Live rendering corrupting piped output. `finassist ask "..." > out.txt` must yield clean text with
+- A1. Colour or Live rendering corrupting piped output. `llmopenfinance ask "..." > out.txt` must yield clean text with
   no ANSI codes.
 - A2. The web server reachable by another page in the user's browser or by another machine without the secret
   token.
@@ -187,7 +187,7 @@ If one test truly cannot be kept as is, editing its patch target is allowed, but
 
 ### 5.4 Web chat (`web.py`, `server` command)
 
-**Command.** `finassist server [--host 127.0.0.1] [--port 8000] [--no-browser] [--threads 4] [--sync/--no-sync]
+**Command.** `llmopenfinance server [--host 127.0.0.1] [--port 8000] [--no-browser] [--threads 4] [--sync/--no-sync]
 [--think] [--sql/--no-sql]`. The last three mirror `chat` exactly (same defaults: sync on, thinking off, `run_sql`
 on for Claude only). It reuses the global `--provider`, `--model`, `--db` options. Startup mirrors the CLI chat:
 optional sync (read-write handle, closed before the read-only one opens), build the assistant, verify the LLM

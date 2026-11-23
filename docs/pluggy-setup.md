@@ -1,6 +1,6 @@
 # Connecting your bank accounts (Pluggy)
 
-`finassist` reads your data through the Pluggy API. For personal use the recommended path is **MeuPluggy**:
+`llmopenfinance` reads your data through the Pluggy API. For personal use the recommended path is **MeuPluggy**:
 
 - it is free, needs no company due diligence and keeps working after the 15-day trial;
 - it is for personal, non-commercial use only, with up to 5 connections.
@@ -33,16 +33,16 @@ Pluggy has **no API to list your items**, so the CLI must be told each item id o
 3. Register the ids:
 
    ```powershell
-   uv run finassist items add <item-id> [<item-id> ...]
+   uv run llmopenfinance items add <item-id> [<item-id> ...]
    ```
 
    Alternatively, set `PLUGGY_ITEM_IDS=<id1>,<id2>`. The ids are registered automatically on the next run.
 
-**B. `finassist connect` (experimental)**
+**B. `llmopenfinance connect` (experimental)**
 
 ```powershell
-uv run finassist connect            # MeuPluggy only
-uv run finassist connect --sandbox  # Pluggy test banks: user-ok / password-ok
+uv run llmopenfinance connect            # MeuPluggy only
+uv run llmopenfinance connect --sandbox  # Pluggy test banks: user-ok / password-ok
 ```
 
 1. The CLI creates a connect token and serves a small page on `http://127.0.0.1:<random-port>/<secret>`.
@@ -55,8 +55,8 @@ No webhook or public URL is involved: OAuth logins return to Pluggy's own callba
 ## 4. Sync and check
 
 ```powershell
-uv run finassist sync
-uv run finassist status
+uv run llmopenfinance sync
+uv run llmopenfinance status
 ```
 
 ## Good to know
@@ -65,7 +65,7 @@ uv run finassist status
 |---|---|
 | Refresh | MeuPluggy items mirror your MeuPluggy connections, which Pluggy refreshes every 24 h. They **cannot** be refreshed on demand, so `sync` just downloads what Pluggy already has and skips unchanged items. |
 | Consent | Authorizations last **1 year**. `sync` warns 30 days before `consentExpiresAt`. After it expires, reads come back empty. Reconnect in meu.pluggy.ai, register the new item id and `items remove` the old one. |
-| Categories | Pluggy's categorization, merchant data and recurring-payment insights are **paid** features (available during the trial). `finassist` categorizes everything locally, so answers stay consistent without them. |
+| Categories | Pluggy's categorization, merchant data and recurring-payment insights are **paid** features (available during the trial). `llmopenfinance` categorizes everything locally, so answers stay consistent without them. |
 | Loans | The MeuPluggy connector does not cover loans. The sync shows "empréstimos indisponível" and continues. |
 | Transactions endpoint | The CLI uses `GET /v2/transactions` (cursor-based). The legacy `GET /transactions` returns `410 Gone` for apps created after 2026-06-02. |
 | Rate limits | 429 responses are retried, honouring `RateLimit-Reset` and `Retry-After`. The API key (valid for 2 h) is cached and renewed automatically. |
