@@ -9,7 +9,7 @@ pip uninstall llmopenfinance -y 2>nul
 
 uv build
 
-for %%A in ("%~dp0\dist\*.tar.gz") do pip install %%~fA
+for %%A in ("%~dp0\dist\*.tar.gz") do pip install %%~fA[web]
 
 rmdir /s /q %~dp0\src\llmopenfinance.egg-info 2>nul
 
