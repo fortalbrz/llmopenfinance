@@ -14,24 +14,35 @@ token and the request data are never logged.
 One assistant and one read-only store serve every request thread, so all use of the session, the assistant and
 DuckDB happens while holding :attr:`WebContext.lock`; a request that finds it held gets 409 instead of queueing.
 ``GET /api/state`` reads only cached values and never touches the database, so it answers even while busy.
+
+Streaming routes (``POST /api/chat``) answer with NDJSON (``application/x-ndjson``): one JSON object per line,
+``{"type": "text"|"tool"|"notice"|"error"|"done", ...}``, always ending with ``{"type": "done", "ok": bool}``. The
+handler takes the lock before returning the response and the stream gives it back exactly once, when it ends,
+fails, is aborted by a disconnecting client or is closed without ever being read (:func:`_stream_under_lock`).
 """
 
 from __future__ import annotations
 
 import html
+import json
 import logging
 import secrets
 import threading
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
-from flask import Flask, Response, jsonify, redirect, request
+from flask import Flask, Response, jsonify, redirect, request, stream_with_context
 from werkzeug.exceptions import HTTPException
 from werkzeug.wrappers import Response as BaseResponse
 
 from llmopenfinance import messages_pt
+from llmopenfinance.agent import AssistantError, ToolStatus
+from llmopenfinance.chat import TextDelta
 from llmopenfinance.i18n import get_language, t
-from llmopenfinance.session import BuildOptions, ChatSession, Factories, run_command
+from llmopenfinance.session import BuildOptions, ChatSession, Factories, Notice, parse_command, run_command
 
 __all__ = ["COOKIE_NAME", "MAX_CONTENT_LENGTH", "WebContext", "create_app", "host_allowed", "new_token", "ui_strings"]
 
@@ -44,6 +55,9 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 _DEFAULT_HTTP_PORT = 80
 # Commands served by POST /api/command; ``sync`` streams through its own route and ``exit`` means nothing here.
 _WEB_COMMANDS = frozenset({"help", "summary", "reset", "history"})
+_NDJSON = "application/x-ndjson"
+
+StreamEvent = dict[str, Any]
 
 
 def new_token() -> str:
@@ -209,6 +223,166 @@ def _login(token: str) -> BaseResponse:
     return response
 
 
+def _run_web_command(ctx: WebContext, name: str) -> tuple[Notice, ...]:
+    """Run ``help``, ``summary``, ``reset`` or ``history``; ``reset`` also clears the transcript. Hold the lock.
+
+    Args:
+        ctx: Shared web context.
+        name: Command name (one of :data:`_WEB_COMMANDS`).
+
+    Returns:
+        tuple[Notice, ...]: Messages for the user, in display order.
+    """
+    notices = run_command(name, ctx.assistant, ctx.session, _no_sync)
+    if name == "reset":
+        ctx.transcript.clear()
+    return notices
+
+
+def _ndjson(event: StreamEvent) -> str:
+    """Encode one stream event as an NDJSON line (non-ASCII text kept as is; the page escapes it).
+
+    Args:
+        event: The event.
+
+    Returns:
+        str: One JSON object followed by ``\\n``.
+    """
+    return json.dumps(event, ensure_ascii=False, default=str) + "\n"
+
+
+class _ReleaseOnce:
+    """Release a lock exactly once, however many of a stream's exit paths call it (thread-safe)."""
+
+    def __init__(self, lock: threading.Lock) -> None:
+        """Remember the lock, which the caller has just acquired.
+
+        Args:
+            lock: The held lock.
+        """
+        self._lock = lock
+        self._guard = threading.Lock()
+        self._held = True
+
+    def __call__(self) -> None:
+        """Release the lock on the first call; later calls do nothing."""
+        with self._guard:
+            if not self._held:
+                return
+            self._held = False
+        self._lock.release()
+
+
+def _ndjson_stream(
+    produce: Callable[[], Generator[StreamEvent]], release: _ReleaseOnce, endpoint: str | None
+) -> Iterator[str]:
+    """Encode the events of ``produce()`` as NDJSON, turning an unexpected failure into ``error`` + ``done``.
+
+    The lock is released in ``finally`` (end, failure or ``GeneratorExit`` from a disconnecting client), after the
+    event generator has been closed, so its own cleanup (the assistant's history rollback) still runs under the lock.
+
+    Args:
+        produce: Creates the event generator; called on the first read, in the thread that serves the stream.
+        release: Releases the request's lock.
+        endpoint: Endpoint name for the log (never the request data).
+
+    Yields:
+        str: NDJSON lines.
+    """
+    try:
+        with closing(produce()) as events:
+            for event in events:
+                yield _ndjson(event)
+    except Exception:
+        logger.exception("Unexpected error while streaming web endpoint %s", endpoint)
+        yield _ndjson({"type": "error", "text": t("web.internal_error")})
+        yield _ndjson({"type": "done", "ok": False})
+    finally:
+        release()
+
+
+def _stream_under_lock(lock: threading.Lock, produce: Callable[[], Generator[StreamEvent]]) -> Response:
+    """Take ``lock`` without blocking and stream ``produce()`` as NDJSON while holding it.
+
+    The lock is released exactly once: by the stream's ``finally`` once it has started, or by the response's
+    ``close`` (``call_on_close``) when the WSGI server closes it without ever reading it, since a generator that never
+    started does not run its ``finally``.
+
+    Args:
+        lock: The lock guarding the session, the assistant and DuckDB.
+        produce: Creates the event generator, which must end with a ``done`` event.
+
+    Returns:
+        Response: The NDJSON stream, or a JSON 409 when the lock is held (nothing is queued).
+    """
+    if not lock.acquire(blocking=False):
+        return _error(409, t("web.busy"))
+    release = _ReleaseOnce(lock)
+    try:
+        stream = _ndjson_stream(produce, release, request.endpoint)
+        response = Response(stream_with_context(stream), mimetype=_NDJSON)
+        response.call_on_close(release)
+    except BaseException:
+        release()
+        raise
+    return response
+
+
+def _chat_events(ctx: WebContext, message: str) -> Generator[StreamEvent]:
+    """Stream the assistant's answer to ``message``; record the turn in the transcript only when it succeeded.
+
+    Closing this generator closes ``assistant.ask``, whose cleanup rolls the unfinished turn out of the history.
+
+    Args:
+        ctx: Shared web context (the caller holds its lock).
+        message: The user's question.
+
+    Yields:
+        StreamEvent: ``text``, ``tool`` and ``error`` events, then ``done``.
+    """
+    parts: list[str] = []
+    ok = True
+    with closing(ctx.assistant.ask(message)) as answer:
+        for event in answer:
+            if isinstance(event, TextDelta):
+                parts.append(event.text)
+                yield {"type": "text", "text": event.text}
+            elif isinstance(event, ToolStatus):
+                yield {"type": "tool", "name": event.call.name, "arguments": dict(event.call.arguments)}
+            elif isinstance(event, AssistantError):
+                ok = False
+                yield {"type": "error", "text": event.message}
+    if ok:
+        ctx.transcript.extend([{"role": "user", "text": message}, {"role": "assistant", "text": "".join(parts)}])
+    yield {"type": "done", "ok": ok}
+
+
+def _command_events(ctx: WebContext, name: str) -> Generator[StreamEvent]:
+    """Stream the outcome of a chat command typed in the message box.
+
+    ``sync`` only points to the Sync button for now, and ``exit`` explains how to leave: the server keeps running.
+
+    Args:
+        ctx: Shared web context (the caller holds its lock).
+        name: Command name from :func:`~llmopenfinance.session.parse_command`.
+
+    Yields:
+        StreamEvent: ``notice`` events, then ``done``.
+    """
+    ok = True
+    match name:
+        case "sync":
+            notices: tuple[Notice, ...] = (Notice("warn", t("web.sync_via_button")),)
+            ok = False
+        case "exit":
+            notices = (Notice("dim", t("web.exit_hint")),)
+        case _:
+            notices = _run_web_command(ctx, name)
+    for notice in notices:
+        yield {"type": "notice", "level": notice.level, "text": notice.text}
+    yield {"type": "done", "ok": ok}
+
+
 def _guard(ctx: WebContext) -> BaseResponse | None:
     """Check Host, then token, then content type; return the rejection, or ``None`` to let the request through.
 
@@ -295,11 +469,21 @@ def create_app(ctx: WebContext) -> Flask:
         if not ctx.lock.acquire(blocking=False):
             return _error(409, t("web.busy"))
         try:
-            notices = run_command(name, ctx.assistant, ctx.session, _no_sync)
-            if name == "reset":
-                ctx.transcript.clear()
+            notices = _run_web_command(ctx, name)
         finally:
             ctx.lock.release()
         return jsonify(notices=[{"level": notice.level, "text": notice.text} for notice in notices])
+
+    @app.post("/api/chat")
+    def chat() -> Response:
+        body = request.get_json(silent=True)
+        message = body.get("message") if isinstance(body, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            return _error(400, t("web.bad_request"))
+        message = message.strip()
+        name = parse_command(message)
+        if name is not None:
+            return _stream_under_lock(ctx.lock, partial(_command_events, ctx, name))
+        return _stream_under_lock(ctx.lock, partial(_chat_events, ctx, message))
 
     return app
