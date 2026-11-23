@@ -1,9 +1,9 @@
-"""Local web chat: a Flask app over the shared chat session (``finassist server``).
+"""Local web chat: a Flask app over the shared chat session (``llmopenfinance server``).
 
 The app serves the user's financial data over plain HTTP, so every request passes three checks, in this order:
 
 1. ``Host`` header (DNS-rebinding defence, :func:`host_allowed`): 400.
-2. The per-launch secret token, read from the ``finassist_token`` cookie and compared in constant time: 401. The
+2. The per-launch secret token, read from the ``llmopenfinance_token`` cookie and compared in constant time: 401. The
    token reaches the browser once, as ``GET /?token=...``, which sets the ``HttpOnly``/``SameSite=Strict`` cookie
    and redirects to ``/``; no other route accepts it from the query string.
 3. ``POST`` bodies must be ``application/json`` (415) and at most 64 KiB (413).
@@ -68,7 +68,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-COOKIE_NAME = "finassist_token"
+COOKIE_NAME = "llmopenfinance_token"
 MAX_CONTENT_LENGTH = 64 * 1024
 # Waitress buffers a whole request body before the app can answer 413 (its default limit is 1 GiB): cap it just above.
 _WAITRESS_BODY_LIMIT = MAX_CONTENT_LENGTH + 4096
@@ -77,7 +77,7 @@ _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 _DEFAULT_HTTP_PORT = 80
 # Commands served by POST /api/command; ``sync`` streams through its own route and ``exit`` means nothing here.
 _WEB_COMMANDS = frozenset({"help", "summary", "reset", "history"})
-_SYNC_THREAD_NAME = "finassist-web-sync"
+_SYNC_THREAD_NAME = "llmopenfinance-web-sync"
 # Every response that is not the page: nothing may load, run or frame it.
 _API_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 

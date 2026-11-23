@@ -58,7 +58,7 @@ src/llmopenfinance/
 
 ## Web front end
 
-`finassist server` (the `web` extra: Flask and Waitress) is a second front end over the same `session` core, so it adds
+`llmopenfinance server` (the `web` extra: Flask and Waitress) is a second front end over the same `session` core, so it adds
 no chat or sync logic of its own.
 
 - **Optional and lazy.** `__main__` imports `web` only inside `server`, after the language guard; when Flask or

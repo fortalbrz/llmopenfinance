@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `finassist` run in pt-BR or en (one language per process), restyle its CLI with Rich, and add a `server` command that serves the same chat as a Flask app on Waitress.
+**Goal:** Make `llmopenfinance` run in pt-BR or en (one language per process), restyle its CLI with Rich, and add a `server` command that serves the same chat as a Flask app on Waitress.
 
 **Architecture:** A hand-rolled message catalog (`i18n.py` + two message modules) feeds every user-visible and LLM-facing string. The chat logic moves out of `__main__.py` into `session.py` so the Rich CLI (`ui.py`) and the web app (`web.py`) render from one core. The web app holds one conversation per process behind a lock and streams NDJSON.
 
@@ -265,7 +265,7 @@ Required pt-BR / en pairs asserted by tests (the rest are faithful translations)
 - `@dataclass class WebContext: session: ChatSession; assistant: Any; factories: Factories; token: str; host: str; port: int; options: BuildOptions; provider: str; model: str; lock: threading.Lock; transcript: list[dict[str, str]]; status: dict[str, Any]` plus `refresh_status() -> None` (reads `last_sync` and `counts()` from the store; call only while holding the lock or at startup). `/api/state` serves the cached `status`, never the database.
 - `create_app(ctx: WebContext) -> Flask` with `MAX_CONTENT_LENGTH = 64 * 1024`.
 - Wire format for every streaming route: `application/x-ndjson`, one JSON object per line, `{"type": "text", "text": str}`, `{"type": "tool", "name": str, "arguments": dict}`, `{"type": "notice", "level": str, "text": str}`, `{"type": "progress", "item_id": str, "ok": bool, "skipped": bool, "counts": dict, "warnings": list, "error": str | None}`, `{"type": "error", "text": str}`, `{"type": "done", "ok": bool}`.
-- Routes in this task: `GET /` (placeholder page until Task 15; a valid `?token=` sets cookie `finassist_token`, `HttpOnly`, `SameSite=Strict`, and redirects to `/`), `GET /api/state` (`provider`, `model`, `language`, `last_sync`, `counts`, `busy`, `strings`, `transcript`), `POST /api/command` (`{"name": "help|summary|reset|history"}` returning `{"notices": [{"level", "text"}]}`; unknown name gives 400; busy gives 409 with a localised message).
+- Routes in this task: `GET /` (placeholder page until Task 15; a valid `?token=` sets cookie `llmopenfinance_token`, `HttpOnly`, `SameSite=Strict`, and redirects to `/`), `GET /api/state` (`provider`, `model`, `language`, `last_sync`, `counts`, `busy`, `strings`, `transcript`), `POST /api/command` (`{"name": "help|summary|reset|history"}` returning `{"notices": [{"level", "text"}]}`; unknown name gives 400; busy gives 409 with a localised message).
 - Rules: every request checks Host (400), then token via cookie compared with `secrets.compare_digest` (401, JSON `{"error": ...}` localised); `POST` requires `Content-Type: application/json` (415); every response carries `Cache-Control: no-store`.
 
 - [ ] **Step 1: Write the failing tests** (Flask test client; build a `WebContext` from `ScriptedChat` in `tests/test_agent.py` and the `con`/`db_path` fixtures): `test_host_allowed` (parametrised, including `evil.example:8000` False, wrong port False, wildcard bind True); `test_token_cookie_flow` (no cookie gives 401; `/?token=ok` sets cookie and redirects; wrong token gives 401); `test_wrong_host_rejected_before_token` (400); `test_post_requires_json` (415); `test_state_shape_and_language` (`language == "en"` under `use_language("en")`; `strings` non-empty); `test_command_routes` (help, summary, history, reset; `summary` returns the snapshot text); `test_busy_returns_409` (hold `ctx.lock`, call `/api/command`); `test_oversized_body_is_413`; `test_token_never_logged` (`caplog` has no record containing the token).
@@ -331,7 +331,7 @@ Required pt-BR / en pairs asserted by tests (the rest are faithful translations)
 - [ ] **Step 2: Run** `uv run pytest tests/test_cli.py -q --no-cov`. Expected: new tests FAIL.
 - [ ] **Step 3: Implement.** Docs: `README.md` and `docs/usage.md` get the `server` command, options, security notes and the `uv sync --extra web` install line; `docs/architecture.md` gets `session`, `web`, `web_page`; `docs/development.md` gets the manual smoke test for the web page.
 - [ ] **Step 4: Run the whole suite.** Expected: PASS, coverage at or above 90%.
-- [ ] **Step 5: Run CHECK**, then commit `feat(web): finassist server command and docs`. **Milestone 3 ends here.**
+- [ ] **Step 5: Run CHECK**, then commit `feat(web): llmopenfinance server command and docs`. **Milestone 3 ends here.**
 
 ---
 

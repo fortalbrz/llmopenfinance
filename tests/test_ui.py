@@ -192,20 +192,20 @@ def test_item_result_styles_on_a_terminal(tty):
 
 def test_banner_is_two_plain_lines_off_a_terminal(plain):
     ui.banner("ollama", "llama3", "pt-BR", "1.2.3")
-    assert plain.getvalue() == "finassist 1.2.3\nProvedor: ollama, Modelo: llama3, Idioma: pt-BR\n"
+    assert plain.getvalue() == "llmopenfinance 1.2.3\nProvedor: ollama, Modelo: llama3, Idioma: pt-BR\n"
 
 
 def test_banner_labels_follow_the_language(plain, use_language):
     use_language("en")
     ui.banner("claude", "sonnet", "en", "1.2.3")
-    assert plain.getvalue() == "finassist 1.2.3\nProvider: claude, Model: sonnet, Language: en\n"
+    assert plain.getvalue() == "llmopenfinance 1.2.3\nProvider: claude, Model: sonnet, Language: en\n"
 
 
 def test_banner_is_a_titled_panel_on_a_terminal(tty):
     ui.banner("ollama", "llama3", "pt-BR", "1.2.3")
     out = strip_ansi(tty.getvalue())
     assert "╭" in out
-    assert "finassist 1.2.3" in out.splitlines()[0]
+    assert "llmopenfinance 1.2.3" in out.splitlines()[0]
     for text in ("Provedor", "ollama", "Modelo", "llama3", "Idioma", "pt-BR"):
         assert text in out
 
@@ -242,7 +242,7 @@ def _answer() -> None:
         (_notice, [TRICKY]),
         (_failed_item, [f"✗ {TRICKY}: {TRICKY}"]),
         (_synced_item, [f"✓ {TRICKY}: {TRICKY}=1", f"! {TRICKY}"]),
-        (_banner, [f"finassist {TRICKY}"]),
+        (_banner, [f"llmopenfinance {TRICKY}"]),
         (_answer, [TRICKY, f"t(q={TRICKY!r})", f"[erro] {TRICKY}"]),
     ],
     ids=["notice", "failed_item", "synced_item", "banner", "answer"],
@@ -294,7 +294,7 @@ def test_no_color_env_disables_styles(tty, monkeypatch):
     assert ui.render_answer([TextDelta("Olá"), tool_event(), AssistantError("boom")]) is False
     out = tty.getvalue()
     assert "\x1b" not in out
-    assert out.startswith("falhou\n  ✓ i: n=1\n    ! w\nfinassist 1.2.3\n")
+    assert out.startswith("falhou\n  ✓ i: n=1\n    ! w\nllmopenfinance 1.2.3\n")
     assert "╭" not in out
     assert out.endswith("[erro] boom\n\n\n")
 
@@ -378,7 +378,7 @@ def test_escape_sequences_in_data_are_removed_off_a_terminal(plain, raw, clean):
         f"{clean}\n"
         f"  ✗ {clean}: {clean}\n"
         f"    ! {clean}\n"
-        f"finassist {clean}\n"
+        f"llmopenfinance {clean}\n"
         f"Provedor: {clean}, Modelo: {clean}, Idioma: {clean}\n"
     )
 

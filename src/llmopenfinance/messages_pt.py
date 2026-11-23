@@ -191,8 +191,8 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "cli.sync.no_credentials": (
         "Defina {id_var} (clientId) e {secret_var} (clientSecret) da sua aplicação em dashboard.pluggy.ai."
     ),
-    "cli.sync.db_locked": "Banco local em uso por outra sessão do finassist ({error}); sincronização ignorada.",
-    "cli.sync.no_items": "Nenhuma conexão registrada. Use 'finassist connect' ou 'finassist items add <item-id>'.",
+    "cli.sync.db_locked": "Banco local em uso por outra sessão do llmopenfinance ({error}); sincronização ignorada.",
+    "cli.sync.no_items": "Nenhuma conexão registrada. Use 'llmopenfinance connect' ou 'llmopenfinance items add <item-id>'.",
     "cli.sync.auth_failed": "Falha ao autenticar na Pluggy: {error}",
     "cli.sync.start": "Sincronizando dados da Pluggy…",
     "cli.sync.done": "Sincronização concluída: {ok} ok, {failed} com falha.",
@@ -245,8 +245,8 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "chat.interrupted": "(interrompido — digite 'sair' para encerrar)",
     "chat.ready": "Assistente financeiro pronto.",
     "chat.no_transactions": (
-        "Ainda não há transações locais. Conecte uma conta com 'finassist connect' ou "
-        "'finassist items add <item-id>' e rode 'finassist sync'."
+        "Ainda não há transações locais. Conecte uma conta com 'llmopenfinance connect' ou "
+        "'llmopenfinance items add <item-id>' e rode 'llmopenfinance sync'."
     ),
     "chat.help": (
         "Comandos: /ajuda  /resumo (dados enviados ao modelo)  /sync  /reset  /historico  sair\n"

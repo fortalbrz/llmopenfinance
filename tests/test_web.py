@@ -36,7 +36,7 @@ UseLanguage = Callable[[str], None]
 TOKEN = "s3cr3t-T0ken_value-for-tests"
 HOST = "127.0.0.1:8000"
 STATE_KEYS = {"provider", "model", "language", "last_sync", "counts", "busy", "strings", "transcript"}
-SYNC_THREAD_NAME = "finassist-web-sync"  # the name web.py gives its sync worker thread
+SYNC_THREAD_NAME = "llmopenfinance-web-sync"  # the name web.py gives its sync worker thread
 
 
 def make_ctx(

@@ -163,7 +163,7 @@ llmopenfinanceOpening the URL sets an `HttpOnly`, `SameSite=Strict` cookie and r
 ### `ask`
 
 ```text
-finassist ask "Quanto gastei com delivery em outubro?" [--sync] [--sql/--no-sql]
+llmopenfinance ask "Quanto gastei com delivery em outubro?" [--sync] [--sql/--no-sql]
 ```
 
 Answers one question and exits. Useful in scripts.
@@ -171,7 +171,7 @@ Answers one question and exits. Useful in scripts.
 ### `sync`
 
 ```text
-finassist sync [--force]
+llmopenfinance sync [--force]
 ```
 
 For every registered item, `sync` checks `GET /items/{id}`. It skips the item when `lastUpdatedAt` hasn't changed,
@@ -185,7 +185,7 @@ Failures are reported per item or product, and the sync never stops part-way. If
 error (network, 429 or 5xx), the item is not marked as synced, so the next `sync` downloads it again without
 needing `--force`.
 
-`sync`, `connect` and `items add/remove` need write access to the database. If another `finassist` session has
+`sync`, `connect` and `items add/remove` need write access to the database. If another `llmopenfinance` session has
 it open, `sync` prints a warning and the chat continues with the local data. `status` and `items list` open the
 database read-only.
 
@@ -197,7 +197,7 @@ terminal the counts and the connections are tables; piped, they are plain lines 
 ### `connect`
 
 ```text
-finassist connect [--sandbox] [--sync/--no-sync]
+llmopenfinance connect [--sandbox] [--sync/--no-sync]
 ```
 
 Opens the Pluggy Connect widget on a loopback page. See [pluggy-setup.md](pluggy-setup.md).
@@ -205,9 +205,9 @@ Opens the Pluggy Connect widget on a loopback page. See [pluggy-setup.md](pluggy
 ### `items`
 
 ```text
-finassist items add <id>... [--verify/--no-verify]
-finassist items list
-finassist items remove <id>
+llmopenfinance items add <id>... [--verify/--no-verify]
+llmopenfinance items list
+llmopenfinance items remove <id>
 ```
 
 `add` validates each id with Pluggy when the credentials are available. `remove` also deletes that item's local data.

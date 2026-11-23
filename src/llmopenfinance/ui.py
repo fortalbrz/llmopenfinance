@@ -58,7 +58,7 @@ __all__ = [
     "status_items",
 ]
 
-_APP_NAME = "finassist"
+_APP_NAME = "llmopenfinance"
 _MAX_TOOL_ARGS = 120
 # CSI sequences: the very pattern ``typer.echo`` / ``click.unstyle`` strip on a non-terminal, which keeps plain
 # output byte-identical to the old echo. (click is vendored inside typer, so it is not importable by itself.)

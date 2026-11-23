@@ -187,8 +187,8 @@ Open Finance (Pluggy) into a local database. Rules:
     "cli.sync.no_credentials": (
         "Set {id_var} (clientId) and {secret_var} (clientSecret) from your application at dashboard.pluggy.ai."
     ),
-    "cli.sync.db_locked": "Local database in use by another finassist session ({error}); sync skipped.",
-    "cli.sync.no_items": "No connections registered. Use 'finassist connect' or 'finassist items add <item-id>'.",
+    "cli.sync.db_locked": "Local database in use by another llmopenfinance session ({error}); sync skipped.",
+    "cli.sync.no_items": "No connections registered. Use 'llmopenfinance connect' or 'llmopenfinance items add <item-id>'.",
     "cli.sync.auth_failed": "Failed to authenticate with Pluggy: {error}",
     "cli.sync.start": "Syncing Pluggy data…",
     "cli.sync.done": "Sync finished: {ok} ok, {failed} failed.",
@@ -240,8 +240,8 @@ Open Finance (Pluggy) into a local database. Rules:
     "chat.interrupted": "(interrupted — type 'exit' to quit)",
     "chat.ready": "Financial assistant ready.",
     "chat.no_transactions": (
-        "No local transactions yet. Connect an account with 'finassist connect' or "
-        "'finassist items add <item-id>' and run 'finassist sync'."
+        "No local transactions yet. Connect an account with 'llmopenfinance connect' or "
+        "'llmopenfinance items add <item-id>' and run 'llmopenfinance sync'."
     ),
     "chat.help": (
         "Commands: /help  /summary (data sent to the model)  /sync  /reset  /history  exit\n"

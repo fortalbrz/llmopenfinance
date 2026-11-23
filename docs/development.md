@@ -52,7 +52,7 @@ A manual check of the whole web chat, with the synthetic dataset and the `web` e
 
 ```powershell
 uv run python -c "from tests.conftest import populate; from llmopenfinance.store import FinanceStore; s = FinanceStore('smoke.duckdb'); populate(s); s.close()"
-uv run finassist --db smoke.duckdb server --no-sync          # add --provider ollama to stay local
+uv run llmopenfinance --db smoke.duckdb server --no-sync          # add --provider ollama to stay local
 ```
 
 The command prints `http://127.0.0.1:8000/?token=...` and opens it. Then check:

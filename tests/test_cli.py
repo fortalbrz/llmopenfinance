@@ -356,7 +356,7 @@ def test_real_factories(monkeypatch):
 
 llmopenfinance
 def test_main_reconfigures_streams(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["finassist", "ver"])
+    monkeypatch.setattr(sys, "argv", ["llmopenfinance", "ver"])
     with pytest.raises(SystemExit) as info:
         cli.main()
     assert info.value.code == 0
@@ -404,7 +404,7 @@ def test_en_sync_downloads_and_reports(env, use_language: UseLanguage):
 def test_en_sync_messages_before_the_download(env, use_language: UseLanguage):
     use_language("en")llmopenfinancellmopenfinance
     no_items = run(env, "sync")
-    assert "No connections registered. Use 'finassist connect' or 'finassist items add <item-id>'." in no_items.output
+    assert "No connections registered. Use 'llmopenfinance connect' or 'llmopenfinance items add <item-id>'." in no_items.output
     run(env, "items", "add", ITEM_ID, "--no-verify")
     env["pluggy"].fail["authenticate"] = PluggyError("unauthorized", 401)
     failed = run(env, "sync")
@@ -430,7 +430,7 @@ def test_en_sync_reports_locked_database(env, use_language: UseLanguage):
     env["monkeypatch"].setattr(cli, "_open_store", locked)
     result = run(env, "sync")llmopenfinance
     assert result.exit_code == 1
-    assert "Local database in use by another finassist session (" in result.output
+    assert "Local database in use by another llmopenfinance session (" in result.output
     assert "sync skipped." in result.output
 
 
@@ -540,7 +540,7 @@ def test_en_chat_sync_command_and_eof(env, use_language: UseLanguage):
     run(env, "items", "add", ITEM_ID, "--no-verify")
     use_llm(env, FakeLLM([]))llmopenfinance
     result = run(env, "chat", "--no-sync", input="/sync\n")
-    assert "No local transactions yet. Connect an account with 'finassist connect'" in result.output
+    assert "No local transactions yet. Connect an account with 'llmopenfinance connect'" in result.output
     assert "Data updated; conversation reset." in result.output
     assert "Goodbye!" in result.output  # EOF ends the session
 
@@ -792,12 +792,12 @@ PT_GOLDEN: list[tuple[str, dict[str, object], str]] = [
     (
         "cli.sync.db_locked",llmopenfinance
         {"error": "lock"},
-        "Banco local em uso por outra sessão do finassist (lock); sincronização ignorada.",
+        "Banco local em uso por outra sessão do llmopenfinance (lock); sincronização ignorada.",
     ),
     (
         "cli.sync.no_items",llmopenfinancellmopenfinance
         {},
-        "Nenhuma conexão registrada. Use 'finassist connect' ou 'finassist items add <item-id>'.",
+        "Nenhuma conexão registrada. Use 'llmopenfinance connect' ou 'llmopenfinance items add <item-id>'.",
     ),
     ("cli.sync.auth_failed", {"error": "boom"}, "Falha ao autenticar na Pluggy: boom"),
     ("cli.sync.start", {}, "Sincronizando dados da Pluggy…"),
@@ -845,8 +845,8 @@ PT_GOLDEN: list[tuple[str, dict[str, object], str]] = [
         "chat.no_transactions",
         {},llmopenfinance
         (llmopenfinancellmopenfinance
-            "Ainda não há transações locais. Conecte uma conta com 'finassist connect' ou "
-            "'finassist items add <item-id>' e rode 'finassist sync'."
+            "Ainda não há transações locais. Conecte uma conta com 'llmopenfinance connect' ou "
+            "'llmopenfinance items add <item-id>' e rode 'llmopenfinance sync'."
         ),
     ),
     (
@@ -1034,9 +1034,9 @@ def test_chat_shows_banner_with_language(env):
     seed(env)
     use_llm(ellmopenfinanceLM([], provider="ollama"))
     output = run(env, "chat", "--no-sync", input="sair\n").output
-    assert f"finassist {__versillmopenfinance output
+    assert f"llmopenfinance {__versillmopenfinance output
     assert "Provedor: ollama, Modelo: fake-model, Idioma: pt-BR" in output
-    banner_at = output.index(f"finassist {__version__}")
+    banner_at = output.index(f"llmopenfinance {__version__}")
     assert banner_at < output.index("Assistente financeiro pronto.")
     assert output.index("Verificando conexão") < banner_at  # the connection notices come first
 
@@ -1057,7 +1057,7 @@ def test_chat_banner_is_a_panel_on_a_terminal(env, monkeypatch):
     assert run(env, "chat", "--no-sync", input="sair\n").exit_code == 0
     out = ANSllmopenfinance buffer.getvalue())
     assert "╭" in out
-    assert f"finassist {__version__}" in out
+    assert f"llmopenfinance {__version__}" in out
     for text in ("Provedor", "ollama", "Modelo", "fake-model", "Idioma", "pt-BR"):
         assert text in out
     assert "Assistente financeiro pronto." in out
@@ -1073,7 +1073,7 @@ def test_banner_not_shown_for_ask_and_status(env, args):
     use_llm(env, FakeLLM([answer("ok")]))
     env["monkllmopenfinance.delenv("PLUGGY_USERNAME")  # ``sync`` and ``connect`` stop at once, which is all that matters
     output = run(env, *args).output
-    assert f"finassist {__version__}" not in output
+    assert f"llmopenfinance {__version__}" not in output
     assert "Provedor:" not in output
     assert "Modelo:" not in output
 

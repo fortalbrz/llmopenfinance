@@ -60,7 +60,7 @@ uv run llmopenfinance --provider ollama         # 100% local (qwen3.5:9b)
 | `llmopenfinance sync [--force]` | Downloads accounts, transactions, card bills, investments and loans |
 | `llmopenfinance status` | Shows connections, consent expiry dates and local row counts |
 | `llmopenfinance connect [--sandbox]` | Connects accounts through the Pluggy Connect widget on a local page |
-| `finassist items add/list/remove` | Manages the registered Pluggy item ids |
+| `llmopenfinance items add/list/remove` | Manages the registered Pluggy item ids |
 
 Global options: `--provider claude|ollama`, `--model <id>`, `--db <file>`, `-v`.
 See [docs/usage.md](docs/usage.md) for the full reference.
@@ -73,7 +73,7 @@ no command-line option for it.
 
 ```powershell
 $env:LLllmopenfinanceNCE_LANG = "en"    # or "pt-BR"
-uv run finassist
+uv run llmopenfinance
 ```
 
 - English shows money as `R$ 1,234.56` and dates as `YYYY-MM-DD`. Portuguese keeps `R$ 1.234,56` and `DD/MM/AAAA`.
@@ -83,14 +83,14 @@ uv run finassist
 
 ## Web chat
 
-`finassist server` serves the same assistant as a chat page in your browser, with buttons for `/help`, `/summary`,
+`llmopenfinance server` serves the same assistant as a chat page in your browser, with buttons for `/help`, `/summary`,
 `/sync`, `/reset` and `/history` and a language that follows `LLMOPENFINANCE_LANG`. It needs the optional `web` extra
 (Flask and Waitress):
 
 ```powershell
 uv sync --extra web
-uv run finassist server                    # syncs, prints a URL with a token and opens the browser
-uv run finassist server --no-browser --no-sync --port 8123
+uv run llmopenfinance server                    # syncs, prints a URL with a token and opens the browser
+uv run llmopenfinance server --no-browser --no-sync --port 8123
 ```
 
 Options: `--host` (default `127.0.0.1`), `--port` (`8000`), `--threads` (`4`, at least 2), `--browser/--no-browser`,

@@ -463,4 +463,4 @@ def test_run_sync_locked_database(tmp_path: Path, use_language: UseLanguage):
     (notice,) = recorder.notices
     assert recorder.items == []
     assert notice == Notice("warn", t("cli.sync.db_locked", error="Could not set lock on file"))
-    assert notice.text.startswith("Local database in use by another finassist session")
+    assert notice.text.startswith("Local database in use by another llmopenfinance session")
