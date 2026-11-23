@@ -136,6 +136,14 @@ def test_llm_error_mid_tool_loop_rolls_back(con):
     assert chat.conversation_history == []
 
 
+def test_answer_error_prefix_follows_the_language(con, use_language: Callable[[str], None]):
+    use_language("en")
+    _chat, assistant = make(con, [LLMError("fell over")])
+    text = assistant.answer("x")
+    assert "[error] fell over" in text
+    assert "[erro]" not in text
+
+
 def test_unexpected_error_rolls_back_history(con):
     """Regression: only LLMError rolled back, leaving a dangling tool_use after other failures."""
     call = ToolCall("c", "get_accounts", {})

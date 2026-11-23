@@ -184,12 +184,13 @@ class FinanceAssistant:
             question: User question.
 
         Returns:
-            str: Concatenated answer text (errors included as ``[erro] ...`` lines).
+            str: Concatenated answer text (errors included as lines prefixed with the localised
+            ``chat.error`` label: ``[erro]`` in Portuguese, ``[error]`` in English).
         """
         parts: list[str] = []
         for event in self.ask(question):
             if isinstance(event, TextDelta):
                 parts.append(event.text)
             elif isinstance(event, AssistantError):
-                parts.append(f"\n[erro] {event.message}")
+                parts.append("\n" + t("chat.error", message=event.message))
         return "".join(parts)

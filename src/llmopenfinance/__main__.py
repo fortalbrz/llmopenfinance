@@ -7,6 +7,8 @@ data (Pluggy), cached in a local DuckDB database.
 Commands: ``chat`` (default), ``ask``, ``sync``, ``status``, ``connect``, ``items add|list|remove``.
 Structure follows ``apexmusic.__main__``: a global ``_state`` filled by the Typer callback,
 ``_handle_*`` functions holding the logic (return exit codes) and thin ``@app.command`` wrappers.
+Every user-visible text comes from the message catalog (``t("cli.*")`` / ``t("chat.*")``) in the language of
+``LLMOPENFINANCE_LANG``, which is validated before the Typer app is built.
 """
 
 from __future__ import annotations
@@ -26,15 +28,39 @@ from llmopenfinance.constants import (
     DEFAULT_DB_PATH,
     DEFAULT_PROVIDER,
     ENV_DB_PATH,
+    ENV_LANG,
     ENV_PLUGGY_CLIENT_ID,
     ENV_PLUGGY_CLIENT_SECRET,
     ENV_PLUGGY_ITEM_IDS,
     ENV_PROVIDER,
 )
+from llmopenfinance.i18n import format_date, get_language, t
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 __all__ = ["app", "main"]
+
+
+def _resolve_language() -> str:
+    """Resolve the process language, or exit with status 2 when ``LLMOPENFINANCE_LANG`` is invalid.
+
+    No language is known when the variable is bad, so the message is plain English and goes to stderr.
+
+    Returns:
+        str: ``"pt-BR"`` or ``"en"``.
+
+    Raises:
+        SystemExit: With status 2 when the language is not supported.
+    """
+    try:
+        return get_language()
+    except ValueError as exc:
+        typer.echo(f"{ENV_LANG}: {exc}", err=True)
+        raise SystemExit(2) from exc
+
+
+# Must run before the Typer app below is built: its command help texts are localised at import time.
+_resolve_language()
 
 
 # ---------------------------------------------------------------------------
@@ -54,27 +80,27 @@ _state = _State()
 
 app = typer.Typer(
     name="finassist",
-    help="Assistente financeiro no terminal — converse com seus dados de Open Finance (Pluggy).",
+    help=t("cli.app.help"),
     invoke_without_command=True,
     add_completion=False,
     rich_markup_mode="rich",
 )
-items_app = typer.Typer(help="Gerencia as conexões (itens) Pluggy sincronizadas.", no_args_is_help=True)
+items_app = typer.Typer(help=t("cli.items.help"), no_args_is_help=True)
 app.add_typer(items_app, name="items")
 
 
 @app.callback()
 def _configure(
     ctx: typer.Context,
-    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Saída detalhada (logs INFO)")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help=t("cli.option.verbose"))] = False,
     provider: Annotated[
-        str, typer.Option("--provider", "-p", help="Provedor de IA: claude | ollama", envvar=ENV_PROVIDER)
+        str, typer.Option("--provider", "-p", help=t("cli.option.provider"), envvar=ENV_PROVIDER)
     ] = DEFAULT_PROVIDER,
-    model: Annotated[str, typer.Option("--model", "-m", help="Modelo (vazio = padrão do provedor)")] = "",
-    db: Annotated[str, typer.Option("--db", help="Arquivo DuckDB local", envvar=ENV_DB_PATH)] = "",
-    version: Annotated[bool, typer.Option("--version", help="Mostra a versão")] = False,
+    model: Annotated[str, typer.Option("--model", "-m", help=t("cli.option.model"))] = "",
+    db: Annotated[str, typer.Option("--db", help=t("cli.option.db"), envvar=ENV_DB_PATH)] = "",
+    version: Annotated[bool, typer.Option("--version", help=t("cli.option.version"))] = False,
 ) -> None:
-    """Assistente financeiro no terminal (Pluggy + Claude/Ollama)."""
+    """Record the global options and start the chat when no command is given."""
     if version:
         from llmopenfinance import __version__
 
@@ -164,7 +190,7 @@ def _print_item_result(result: Any) -> None:
     if not result.ok:
         typer.secho(f"  ✗ {result.item_id}: {result.error}", fg=typer.colors.RED)
     elif result.skipped:
-        _echo_dim(f"  = {result.item_id}: sem alterações desde a última sincronização")
+        _echo_dim(f"  = {result.item_id}: {t('cli.sync.unchanged')}")
     else:
         counts = ", ".join(f"{k}={v}" for k, v in result.counts.items())
         typer.secho(f"  ✓ {result.item_id}: {counts}", fg=typer.colors.GREEN)
@@ -186,8 +212,7 @@ def _run_sync(*, force: bool = False) -> int:
 
     if not _has_pluggy_credentials():
         typer.secho(
-            f"Defina {ENV_PLUGGY_CLIENT_ID} (clientId) e {ENV_PLUGGY_CLIENT_SECRET} (clientSecret) "
-            "da sua aplicação em dashboard.pluggy.ai.",
+            t("cli.sync.no_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET),
             fg=typer.colors.RED,
         )
         return 1
@@ -196,27 +221,24 @@ def _run_sync(*, force: bool = False) -> int:
     try:
         store = _open_store()
     except duckdb.IOException as exc:
-        typer.secho(
-            f"Banco local em uso por outra sessão do finassist ({exc}); sincronização ignorada.",
-            fg=typer.colors.YELLOW,
-        )
+        typer.secho(t("cli.sync.db_locked", error=exc), fg=typer.colors.YELLOW)
         return 1
     with store:
         if not store.list_items():
-            typer.echo("Nenhuma conexão registrada. Use 'finassist connect' ou 'finassist items add <item-id>'.")
+            typer.echo(t("cli.sync.no_items"))
             return 0
         try:
             client = _pluggy_client()
             client.authenticate()
         except (PluggyError, ValueError) as exc:
-            typer.secho(f"Falha ao autenticar na Pluggy: {exc}", fg=typer.colors.RED)
+            typer.secho(t("cli.sync.auth_failed", error=exc), fg=typer.colors.RED)
             return 1
-        typer.echo("Sincronizando dados da Pluggy…")
+        typer.echo(t("cli.sync.start"))
         try:
             report = sync_all(client, store, force=force, on_item=_print_item_result)
         finally:
             client.close()
-    typer.echo(f"Sincronização concluída: {report.n_success} ok, {report.n_failed} com falha.")
+    typer.echo(t("cli.sync.done", ok=report.n_success, failed=report.n_failed))
     return 0 if report.n_success or not report.n_total else 1
 
 
@@ -264,19 +286,16 @@ def _build_assistant(session: _ChatSession, *, think: bool, enable_sql: bool | N
     except ValueError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
         return None
-    typer.echo(f"Verificando conexão com {llm.provider} ({llm.model})…")
+    typer.echo(t("cli.llm.verifying", provider=llm.provider, model=llm.model))
     if not llm._verify_connection():
-        typer.secho(f"Não foi possível conectar a {llm.provider} / {llm.model}.", fg=typer.colors.RED)
+        typer.secho(t("cli.llm.unreachable", provider=llm.provider, model=llm.model), fg=typer.colors.RED)
         if llm.provider == "ollama":
-            typer.echo(f"Rode: ollama serve  e  ollama pull {llm.model}")
+            typer.echo(t("cli.llm.ollama_hint", model=llm.model))
         else:
-            typer.echo("Verifique ANTHROPIC_API_KEY e o nome do modelo.")
+            typer.echo(t("cli.llm.claude_hint"))
         return None
     if llm.provider == "claude":
-        _echo_dim(
-            "Aviso: com Claude, o resumo financeiro e os resultados das consultas são enviados à API da Anthropic. "
-            "Use --provider ollama para manter tudo local."
-        )
+        _echo_dim(t("cli.llm.privacy"))
     sql = enable_sql if enable_sql is not None else llm.provider == "claude"
     registry = ToolRegistry(session.connection, enable_sql=sql)
     return FinanceAssistant(llm, registry, session.snapshot)
@@ -296,23 +315,29 @@ def _render_answer(assistant: Any, question: str) -> bool:
     from llmopenfinance.chat import TextDelta
 
     ok = True
-    typer.echo("\nAssistente: ", nl=False)
+    typer.echo(f"\n{t('chat.assistant_label')}: ", nl=False)
     for event in assistant.ask(question):
         if isinstance(event, TextDelta):
             typer.echo(event.text, nl=False)
         elif isinstance(event, ToolStatus):
             args = ", ".join(f"{k}={v!r}" for k, v in event.call.arguments.items())
-            _echo_dim(f"\n  ↳ consultando {event.call.name}({args[:120]})")
+            _echo_dim("\n  " + t("chat.tool_status", name=event.call.name, args=args[:120]))
         elif isinstance(event, AssistantError):
             ok = False
-            typer.secho(f"\n[erro] {event.message}", fg=typer.colors.RED)
+            typer.secho("\n" + t("chat.error", message=event.message), fg=typer.colors.RED)
     typer.echo("\n")
     return ok
 
 
-HELP_TEXT = """Comandos: /ajuda  /resumo (dados enviados ao modelo)  /sync  /reset  /historico  sair
-Exemplos: "Quais assinaturas eu tenho?"  "Quanto gasto por mês com compras online?"
-          "Como posso melhorar minhas finanças?\""""
+def _help_text() -> str:
+    """Return the in-chat help in the process language.
+
+    Evaluated on every call so it follows the process language; never cache it in a module constant.
+
+    Returns:
+        str: The command list on the first line, then example questions.
+    """
+    return t("chat.help")
 
 
 def _process_chat_cmd(user_input: str, assistant: Any, session: _ChatSession) -> bool | None:
@@ -329,7 +354,7 @@ def _process_chat_cmd(user_input: str, assistant: Any, session: _ChatSession) ->
     """
     command = user_input.lower()
     if command in EXIT_COMMANDS:
-        typer.echo("\nAté logo!")
+        typer.echo("\n" + t("chat.goodbye"))
         return False
     handler = _CHAT_COMMANDS.get(command)
     if handler is None:
@@ -340,11 +365,11 @@ def _process_chat_cmd(user_input: str, assistant: Any, session: _ChatSession) ->
 
 def _cmd_reset(assistant: Any, _session: _ChatSession) -> None:
     assistant.refresh()
-    typer.echo("Conversa reiniciada.")
+    typer.echo(t("chat.reset"))
 
 
 def _cmd_help(_assistant: Any, _session: _ChatSession) -> None:
-    typer.echo(HELP_TEXT)
+    typer.echo(_help_text())
 
 
 def _cmd_summary(_assistant: Any, session: _ChatSession) -> None:
@@ -355,15 +380,15 @@ def _cmd_sync(assistant: Any, session: _ChatSession) -> None:
     code = session.resync()
     assistant.refresh()
     if code == 0:
-        typer.echo("Dados atualizados; conversa reiniciada.")
+        typer.echo(t("chat.sync_ok"))
     else:
-        typer.secho("Sincronização falhou; usando os dados locais (conversa reiniciada).", fg=typer.colors.YELLOW)
+        typer.secho(t("chat.sync_failed"), fg=typer.colors.YELLOW)
 
 
 def _cmd_history(assistant: Any, _session: _ChatSession) -> None:
     history = assistant.chat.get_history()
     if not history:
-        typer.echo("(vazio)")
+        typer.echo(t("chat.history_empty"))
     for i, msg in enumerate(history, 1):
         content = msg.get("content")
         text = content if isinstance(content, str) else str(content)
@@ -371,7 +396,8 @@ def _cmd_history(assistant: Any, _session: _ChatSession) -> None:
         typer.echo(f"{i}. [{msg['role'].upper()}] {snippet}")
 
 
-EXIT_COMMANDS = frozenset({"sair", "quit", "exit", "bye", "q", "/sair"})
+# The aliases of both languages are accepted in either; only the help text names the current language's forms.
+EXIT_COMMANDS = frozenset({"sair", "quit", "exit", "bye", "q", "/sair", "/exit", "/quit"})
 _CHAT_COMMANDS: dict[str, Callable[[Any, _ChatSession], None]] = {
     "/reset": _cmd_reset,
     "reset": _cmd_reset,
@@ -380,8 +406,11 @@ _CHAT_COMMANDS: dict[str, Callable[[Any, _ChatSession], None]] = {
     "ajuda": _cmd_help,
     "help": _cmd_help,
     "/resumo": _cmd_summary,
+    "/summary": _cmd_summary,
     "/sync": _cmd_sync,
     "/historico": _cmd_history,
+    "/history": _cmd_history,
+    "historico": _cmd_history,
     "history": _cmd_history,
 }
 
@@ -419,13 +448,13 @@ def _chat_loop(assistant: Any, session: _ChatSession, prompt: Callable[[str], st
     """
     while True:
         try:
-            if not _handle_input(prompt("\nVocê"), assistant, session):
+            if not _handle_input(prompt("\n" + t("chat.prompt_label")), assistant, session):
                 return 0
         except KeyboardInterrupt:
-            typer.echo("\n(interrompido — digite 'sair' para encerrar)")
+            typer.echo("\n" + t("chat.interrupted"))
             continue
         except (EOFError, typer.Abort):
-            typer.echo("\nAté logo!")
+            typer.echo("\n" + t("chat.goodbye"))
             return 0
         except Exception:
             logger.exception("Chat error")
@@ -441,7 +470,7 @@ def _maybe_sync(*, sync: bool) -> None:
     if not sync:
         return
     if not _has_pluggy_credentials():
-        _echo_dim("Credenciais Pluggy ausentes — usando apenas os dados locais.")
+        _echo_dim(t("cli.sync.skipped_no_credentials"))
         return
     _run_sync()
 
@@ -464,12 +493,8 @@ def _handle_chat(*, sync: bool = True, think: bool = False, enable_sql: bool | N
         if assistant is None:
             return 1
         if session.store.counts()["transactions"] == 0:
-            typer.secho(
-                "Ainda não há transações locais. Conecte uma conta com 'finassist connect' ou "
-                "'finassist items add <item-id>' e rode 'finassist sync'.",
-                fg=typer.colors.YELLOW,
-            )
-        typer.echo("\nAssistente financeiro pronto. " + HELP_TEXT.splitlines()[0])
+            typer.secho(t("chat.no_transactions"), fg=typer.colors.YELLOW)
+        typer.echo("\n" + t("chat.ready") + " " + _help_text().splitlines()[0])
         typer.echo("=" * 70)
         return _chat_loop(assistant, session)
     finally:
@@ -508,16 +533,16 @@ def _handle_status() -> int:
         items = store.list_items()
         counts = store.counts()
         last_sync = store.get_meta("last_sync")
-    typer.echo(f"Banco local: {_state.db_path}")
-    typer.echo(f"Última sincronização: {last_sync or 'nunca'}")
-    typer.echo("Dados: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+    typer.echo(t("cli.status.database", path=_state.db_path))
+    typer.echo(t("cli.status.last_sync", when=last_sync or t("cli.status.never")))
+    typer.echo(t("cli.status.data", counts=", ".join(f"{k}={v}" for k, v in counts.items())))
     if not items:
-        typer.echo("Nenhuma conexão registrada.")
+        typer.echo(t("cli.no_connections"))
     for item in items:
         line = f"- {item['id']}  {item.get('connector_name') or '?'}  status={item.get('status') or '?'}"
         expires = item.get("consent_expires_at")
         if expires:
-            line += f"  consentimento até {expires:%d/%m/%Y}"
+            line += "  " + t("cli.status.consent_until", date=format_date(expires))
         typer.echo(line)
     return 0
 
@@ -550,7 +575,8 @@ def _handle_items_add(item_ids: list[str], *, verify: bool = True) -> int:
                 typer.echo(f"✓ {item_id} ({(item.get('connector') or {}).get('name', '?')}, {item.get('status')})")
             else:
                 added = store.add_item(item_id)
-                typer.echo(f"{'✓' if added else '='} {item_id}{'' if added else ' (já registrado)'}")
+                note = "" if added else " " + t("cli.items.already_registered")
+                typer.echo(f"{'✓' if added else '='} {item_id}{note}")
     if client is not None:
         client.close()
     return 1 if failed else 0
@@ -565,9 +591,10 @@ def _handle_items_list() -> int:
     with _open_store(read_only=True) as store:
         items = store.list_items()
     if not items:
-        typer.echo("Nenhuma conexão registrada.")
+        typer.echo(t("cli.no_connections"))
     for item in items:
-        typer.echo(f"{item['id']}  {item.get('connector_name') or '?'}  {item.get('status') or 'não sincronizado'}")
+        status = item.get("status") or t("cli.items.not_synced")
+        typer.echo(f"{item['id']}  {item.get('connector_name') or '?'}  {status}")
     return 0
 
 
@@ -582,7 +609,10 @@ def _handle_items_remove(item_id: str) -> int:
     """
     with _open_store() as store:
         removed = store.remove_item(item_id)
-    typer.echo(f"Removido: {item_id}" if removed else f"Item não encontrado: {item_id}")
+    if removed:
+        typer.echo(t("cli.items.removed", item_id=item_id))
+    else:
+        typer.echo(t("cli.items.not_found", item_id=item_id))
     return 0 if removed else 1
 
 
@@ -602,17 +632,17 @@ def _connect_items(client: Any, *, sandbox: bool) -> list[str]:
 
         def _on_item(item_id: str) -> None:
             store.add_item(item_id)
-            typer.echo(f"Conexão recebida: {item_id} — aguardando a sincronização da Pluggy…")
+            typer.echo(t("cli.connect.received", item_id=item_id))
             item = wait_for_item(client, item_id)
             store.update_item(item)
             typer.echo(f"  status: {item.get('status')} ({item.get('executionStatus')})")
 
-        typer.echo("Abrindo o Pluggy Connect no navegador… conclua a conexão e feche o widget.")
+        typer.echo(t("cli.connect.opening"))
         return run_connect_flow(
             client,
             _on_item,
             sandbox=sandbox,
-            on_url=lambda url: _echo_dim(f"Se o navegador não abrir, acesse: {url}"),
+            on_url=lambda url: _echo_dim(t("cli.connect.browser_hint", url=url)),
         )
 
 
@@ -629,18 +659,21 @@ def _handle_connect(*, sandbox: bool = False, sync: bool = True) -> int:
     from llmopenfinance.pluggy import PluggyError
 
     if not _has_pluggy_credentials():
-        typer.secho(f"Defina {ENV_PLUGGY_CLIENT_ID} e {ENV_PLUGGY_CLIENT_SECRET}.", fg=typer.colors.RED)
+        typer.secho(
+            t("cli.connect.missing_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET),
+            fg=typer.colors.RED,
+        )
         return 1
     client = _pluggy_client()
     try:
         received = _connect_items(client, sandbox=sandbox)
     except PluggyError as exc:
-        typer.secho(f"Falha na Pluggy: {exc}", fg=typer.colors.RED)
+        typer.secho(t("cli.connect.pluggy_failed", error=exc), fg=typer.colors.RED)
         return 1
     finally:
         client.close()
     if not received:
-        typer.echo("Nenhuma conexão criada.")
+        typer.echo(t("cli.connect.none_created"))
         return 1
     return _run_sync() if sync else 0
 
@@ -650,73 +683,71 @@ def _handle_connect(*, sandbox: bool = False, sync: bool = True) -> int:
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(help=t("cli.chat.help"))
 def chat(
-    sync: Annotated[bool, typer.Option("--sync/--no-sync", help="Sincronizar antes de conversar")] = True,
-    think: Annotated[bool, typer.Option("--think", help="Ativa o raciocínio (thinking) no Ollama")] = False,
-    sql: Annotated[
-        bool | None, typer.Option("--sql/--no-sql", help="Permite a ferramenta run_sql (padrão: só no Claude)")
-    ] = None,
+    sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.chat.sync"))] = True,
+    think: Annotated[bool, typer.Option("--think", help=t("cli.chat.think"))] = False,
+    sql: Annotated[bool | None, typer.Option("--sql/--no-sql", help=t("cli.chat.sql"))] = None,
 ) -> None:
-    """Conversa interativa com o assistente financeiro (comando padrão)."""
+    """Run the interactive chat (default command)."""
     raise typer.Exit(code=_handle_chat(sync=sync, think=think, enable_sql=sql))
 
 
-@app.command()
+@app.command(help=t("cli.ask.help"))
 def ask(
-    question: Annotated[str, typer.Argument(help="Pergunta")],
-    sync: Annotated[bool, typer.Option("--sync/--no-sync", help="Sincronizar antes")] = False,
-    sql: Annotated[bool | None, typer.Option("--sql/--no-sql", help="Permite run_sql")] = None,
+    question: Annotated[str, typer.Argument(help=t("cli.ask.question"))],
+    sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.ask.sync"))] = False,
+    sql: Annotated[bool | None, typer.Option("--sql/--no-sql", help=t("cli.ask.sql"))] = None,
 ) -> None:
-    """Faz uma pergunta única e sai."""
+    """Answer one question and exit."""
     raise typer.Exit(code=_handle_ask(question, sync=sync, enable_sql=sql))
 
 
-@app.command()
-def sync(force: Annotated[bool, typer.Option("--force", help="Baixar tudo mesmo sem alterações")] = False) -> None:
-    """Sincroniza contas, transações, faturas, investimentos e empréstimos da Pluggy."""
+@app.command(help=t("cli.sync.help"))
+def sync(force: Annotated[bool, typer.Option("--force", help=t("cli.sync.force"))] = False) -> None:
+    """Sync every registered item from Pluggy."""
     raise typer.Exit(code=_run_sync(force=force))
 
 
-@app.command()
+@app.command(help=t("cli.status.help"))
 def status() -> None:
-    """Mostra conexões registradas, consentimentos e volume de dados locais."""
+    """Show registered connections, consents and local data counts."""
     raise typer.Exit(code=_handle_status())
 
 
-@app.command()
+@app.command(help=t("cli.connect.help"))
 def connect(
-    sandbox: Annotated[bool, typer.Option("--sandbox", help="Mostrar bancos de teste (sandbox)")] = False,
-    sync: Annotated[bool, typer.Option("--sync/--no-sync", help="Sincronizar ao final")] = True,
+    sandbox: Annotated[bool, typer.Option("--sandbox", help=t("cli.connect.sandbox"))] = False,
+    sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.connect.sync"))] = True,
 ) -> None:
-    """Conecta contas via Pluggy Connect (MeuPluggy) no navegador."""
+    """Connect accounts through Pluggy Connect in the browser."""
     raise typer.Exit(code=_handle_connect(sandbox=sandbox, sync=sync))
 
 
-@items_app.command("add")
+@items_app.command("add", help=t("cli.items.add.help"))
 def items_add(
-    item_ids: Annotated[list[str], typer.Argument(help="Item ids da Pluggy (dashboard → Demo → Connected Items)")],
-    verify: Annotated[bool, typer.Option("--verify/--no-verify", help="Validar na Pluggy")] = True,
+    item_ids: Annotated[list[str], typer.Argument(help=t("cli.items.add.ids"))],
+    verify: Annotated[bool, typer.Option("--verify/--no-verify", help=t("cli.items.add.verify"))] = True,
 ) -> None:
-    """Registra item ids da Pluggy para sincronização."""
+    """Register Pluggy item ids for syncing."""
     raise typer.Exit(code=_handle_items_add(item_ids, verify=verify))
 
 
-@items_app.command("list")
+@items_app.command("list", help=t("cli.items.list.help"))
 def items_list() -> None:
-    """Lista as conexões registradas."""
+    """List the registered connections."""
     raise typer.Exit(code=_handle_items_list())
 
 
-@items_app.command("remove")
-def items_remove(item_id: Annotated[str, typer.Argument(help="Item id")]) -> None:
-    """Remove uma conexão e seus dados locais."""
+@items_app.command("remove", help=t("cli.items.remove.help"))
+def items_remove(item_id: Annotated[str, typer.Argument(help=t("cli.items.remove.id"))]) -> None:
+    """Remove a connection and its local data."""
     raise typer.Exit(code=_handle_items_remove(item_id))
 
 
-@app.command("ver")
+@app.command("ver", help=t("cli.ver.help"))
 def version_cmd() -> None:
-    """Mostra a versão."""
+    """Print the version."""
     from llmopenfinance import __version__
 
     typer.echo(f"llmopenfinance {__version__}")

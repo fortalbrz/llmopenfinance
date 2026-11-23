@@ -21,7 +21,8 @@ Assistente:
 ...
 ```
 
-Example questions (answers are always in Brazilian Portuguese):
+Example questions (answers are in Brazilian Portuguese by default; set `LLMOPENFINANCE_LANG=en` for English,
+see [Language](#language)):
 
 - *Quais serviços eu assino?* (what services do I subscribe to?)
 - *Quanto gasto por mês com compras online?* (how much do I spend on online shopping each month?)
@@ -62,6 +63,22 @@ uv run finassist --provider ollama         # 100% local (qwen3.5:9b)
 
 Global options: `--provider claude|ollama`, `--model <id>`, `--db <file>`, `-v`.
 See [docs/usage.md](docs/usage.md) for the full reference.
+
+## Language
+
+The application speaks Brazilian Portuguese (`pt-BR`, the default) or English (`en`): the command help, every message,
+the assistant's system prompt and its answers. Pick one with the `LLMOPENFINANCE_LANG` environment variable. There is
+no command-line option for it.
+
+```powershell
+$env:LLMOPENFINANCE_LANG = "en"    # or "pt-BR"
+uv run finassist
+```
+
+- English shows money as `R$ 1,234.56` and dates as `YYYY-MM-DD`. Portuguese keeps `R$ 1.234,56` and `DD/MM/AAAA`.
+- An unsupported value stops the program with a short message on stderr and exit status 2.
+- Stored data such as category labels (`Alimentação`) is never translated, and the chat commands of both languages
+  (`/ajuda` and `/help`, `/resumo` and `/summary`, `sair` and `exit`) work in either.
 
 ## How it works
 

@@ -36,8 +36,11 @@ installments). They don't count toward item limits and are deleted after 30 days
 ## Adding a tool
 
 1. Write a pure query function in `analytics.py` that takes a DuckDB connection and returns JSON-able data.
-2. Register a `ToolSpec` in `tools.BASE_TOOLS`. Its description must say *when* to call it. Use a JSON Schema
-   with `enum`, `format` and min/max wherever they apply.
+2. Add a `ToolSpec` in `tools.build_base_tools()`; `ToolRegistry` builds its specs from that function.
+   `tools.BASE_TOOLS` is only a lazy compatibility attribute, so don't register anything there. Take the description
+   and the parameter descriptions from catalog keys (`tool.<name>.description` and so on) and add those keys to both
+   `messages_pt.py` and `messages_en.py`. The description must say *when* to call it. Use a JSON Schema with
+   `enum`, `format` and min/max wherever they apply.
 3. Add tests in `test_analytics.py` (exact values on the synthetic dataset) and add the tool to
    `test_tools.py::test_every_tool_runs`.
 4. Keep tool lists and descriptions static. Claude's prompt cache depends on a stable prefix.

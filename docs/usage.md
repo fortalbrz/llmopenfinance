@@ -21,6 +21,30 @@ These go **before** the command, for example `finassist --provider ollama chat`.
 | `PLUGGY_ITEM_IDS` | Optional comma-separated item ids, registered automatically |
 | `ANTHROPIC_API_KEY` (or `CLAUDE_TOKEN`) | Claude API key |
 | `OLLAMA_SERVER` / `OLLAMA_HOST` | Ollama URL (default `http://localhost:11434`) |
+| `LLMOPENFINANCE_LANG` | Language of the whole application: `pt-BR` (default) or `en`. See [Language](#language) |
+
+## Language
+
+`LLMOPENFINANCE_LANG` picks the language of the command help, every message, the chat commands' output, the
+system prompt (so the model answers in that language) and the tool descriptions. There is no `--lang` option.
+
+| Value | Language | Money | Dates |
+|---|---|---|---|
+| unset, empty, `pt`, `pt-BR`, `pt_br` | Brazilian Portuguese (default) | `R$ 1.234,56` | `DD/MM/AAAA` |
+| `en`, `en-US`, `en_GB` | English | `R$ 1,234.56` | `YYYY-MM-DD` |
+
+- Case and surrounding spaces are ignored, and `_` counts as `-`. Only the first part (`pt` or `en`) matters.
+- Any other value is an error: `finassist` prints a one-line message that names the supported values on stderr and exits
+  with status 2.
+- The language is fixed for the whole run. Stored data is never translated: category labels such as `Alimentação`,
+  Pluggy values and transaction descriptions stay as they are.
+- The chat commands of both languages work in either language (for example `/help` and `/ajuda`). Only the in-chat help
+  names the forms of the current language.
+
+```powershell
+$env:LLMOPENFINANCE_LANG = "en"
+uv run finassist --help
+```
 
 ## Commands
 
@@ -38,12 +62,12 @@ In-chat commands:
 
 | Command | Effect |
 |---|---|
-| `/ajuda` | Help |
-| `/resumo` | Prints the financial snapshot that goes into the system prompt |
+| `/ajuda` or `/help` | Help |
+| `/resumo` or `/summary` | Prints the financial snapshot that goes into the system prompt |
 | `/sync` | Syncs, reloads the data and starts a new conversation |
 | `/reset` | Starts a new conversation |
-| `/historico` | Shows the conversation history |
-| `sair` / `quit` / `exit` / `q` | Exit. Ctrl+C at the prompt also exits, as does end of input (Ctrl+Z then Enter on Windows, Ctrl+D elsewhere). Ctrl+C while an answer is streaming only interrupts that answer. |
+| `/historico` or `/history` | Shows the conversation history |
+| `sair` / `exit` / `quit` / `bye` / `q` (also `/sair`, `/exit`, `/quit`) | Exit. Ctrl+C at the prompt also exits, as does end of input (Ctrl+Z then Enter on Windows, Ctrl+D elsewhere). Ctrl+C while an answer is streaming only interrupts that answer. |
 
 ### `ask`
 
