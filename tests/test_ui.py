@@ -554,3 +554,194 @@ def test_interrupt_raised_by_the_generator_leaves_the_terminal_clean(tty):
     assert closed == ["closed"]
     assert out.rindex("\x1b[?25h") > out.index("\x1b[?25l")
     assert sys.stdout is stdout_before
+
+
+# ---------------------------------------------------------------------------
+# Markdown links never become terminal hyperlinks (the model controls the target)
+# ---------------------------------------------------------------------------
+
+
+def test_live_answer_does_not_emit_terminal_hyperlinks(tty):
+    ui.render_answer([TextDelta("Veja [o site](https://example.com/x) agora.")])
+    out = tty.getvalue()
+    assert "\x1b]8;" not in out  # no OSC 8 sequence, whatever the link target
+    assert "o site" in strip_ansi(out)
+
+
+# ---------------------------------------------------------------------------
+# Counts and connection tables: terminal only; plain lines everywhere else
+# ---------------------------------------------------------------------------
+
+LONG_ID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"  # 36 characters, like a Pluggy item id
+CONSENT = "consentimento até 01/06/2027"
+COUNTS = {"items": 1, "accounts": 2, "transactions": 91, "bills": 2, "investments": 2, "loans": 1, "categories": 3}
+
+
+def rows():
+    return [ui.ItemRow(LONG_ID, "MeuPluggy", "UPDATED", CONSENT), ui.ItemRow("item-2", "Banco do Brasil", "?")]
+
+
+def terminal(monkeypatch: pytest.MonkeyPatch, width: int) -> io.StringIO:
+    """Replace the module console with a forced terminal ``width`` columns wide."""
+    buffer = io.StringIO()
+    console = Console(
+        file=buffer, theme=ui.THEME, width=width, force_terminal=True, color_system="standard", legacy_windows=False
+    )
+    monkeypatch.setattr(ui, "console", console)
+    return buffer
+
+
+def first_column(table_output: str) -> str:
+    """Join the first cell of every table row: a folded id comes back in one piece."""
+    return "".join(line.split("│")[1].strip() for line in table_output.splitlines() if line.startswith("│"))
+
+
+def test_data_counts_plain_line_is_the_old_status_line(plain):
+    ui.data_counts(COUNTS)
+    assert plain.getvalue() == (
+        "Dados: items=1, accounts=2, transactions=91, bills=2, investments=2, loans=1, categories=3\n"
+    )
+
+
+def test_data_counts_plain_line_follows_the_language(plain, use_language):
+    use_language("en")
+    ui.data_counts({"accounts": 2})
+    assert plain.getvalue() == "Data: accounts=2\n"
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_data_counts_table_on_a_terminal(monkeypatch, width):
+    buffer = terminal(monkeypatch, width)
+    ui.data_counts(COUNTS)
+    out = strip_ansi(buffer.getvalue())
+    assert "╭" in out
+    assert "Dados" in out
+    for key, value in COUNTS.items():
+        assert f"{key}={value}" in out
+    assert "Dados:" not in out
+    assert all(len(line) <= width for line in out.splitlines())
+
+
+def test_status_items_plain_lines_are_the_old_status_lines(plain):
+    ui.status_items(rows())
+    assert plain.getvalue() == (
+        f"- {LONG_ID}  MeuPluggy  status=UPDATED  {CONSENT}\n- item-2  Banco do Brasil  status=?\n"
+    )
+
+
+def test_item_list_plain_lines_are_the_old_list_lines(plain):
+    ui.item_list(rows())
+    assert plain.getvalue() == f"{LONG_ID}  MeuPluggy  UPDATED\nitem-2  Banco do Brasil  ?\n"
+
+
+@pytest.mark.parametrize("name", ["status_items", "item_list"])
+def test_no_rows_print_nothing(plain, name):
+    getattr(ui, name)([])
+    assert not plain.getvalue()
+
+
+@pytest.mark.parametrize("name", ["status_items", "item_list"])
+def test_no_rows_print_nothing_on_a_terminal_either(tty, name):
+    getattr(ui, name)([])
+    assert not tty.getvalue()
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_status_items_table_keeps_every_cell_intact(monkeypatch, width):
+    buffer = terminal(monkeypatch, width)
+    ui.status_items(rows())
+    out = strip_ansi(buffer.getvalue())
+    assert "╭" in out
+    assert all(len(line) <= width for line in out.splitlines())  # nothing is wider than the terminal
+    assert "…" not in out  # nothing was cropped with an ellipsis
+    for text in (CONSENT, "UPDATED", "MeuPluggy", "Banco do Brasil", "item-2", "Consentimento"):
+        assert text in out
+    assert LONG_ID in first_column(out)  # at 80 columns the id folds onto two lines, but all of it is there
+    if width == 120:
+        assert LONG_ID in out  # wide enough for one line
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_item_list_table_keeps_every_cell_intact(monkeypatch, width):
+    buffer = terminal(monkeypatch, width)
+    ui.item_list([ui.ItemRow(LONG_ID, "MeuPluggy", "não sincronizado")])
+    out = strip_ansi(buffer.getvalue())
+    assert "╭" in out
+    assert all(len(line) <= width for line in out.splitlines())
+    assert "não sincronizado" in out
+    assert "MeuPluggy" in out
+    assert "Consentimento" not in out  # ``items list`` has no consent column
+    assert LONG_ID in first_column(out)
+
+
+def test_table_headers_follow_the_language(monkeypatch, use_language):
+    use_language("en")
+    buffer = terminal(monkeypatch, 120)
+    ui.status_items(rows())
+    out = strip_ansi(buffer.getvalue())
+    for header in ("ID", "Connector", "Status", "Consent"):
+        assert header in out
+    assert "Conector" not in out
+
+
+def test_items_fall_back_to_one_line_per_item_when_the_columns_cannot_fit(monkeypatch):
+    buffer = terminal(monkeypatch, 50)  # the connector, status and consent columns alone need 44 + 13 columns
+    ui.status_items(rows())
+    out = strip_ansi(buffer.getvalue())
+    assert "╭" not in out
+    assert "│" not in out
+    expected = f"- {LONG_ID}  MeuPluggy  status=UPDATED  {CONSENT}\n- item-2  Banco do Brasil  status=?\n"
+    assert out.split() == expected.split()  # the lines may wrap at spaces, but every word is there
+
+
+@pytest.mark.parametrize("name", ["status_items", "item_list"])
+def test_no_color_prints_the_plain_lines_on_a_terminal(monkeypatch, name):
+    buffer = terminal(monkeypatch, 120)
+    monkeypatch.setenv("NO_COLOR", "1")
+    getattr(ui, name)(rows())
+    ui.data_counts(COUNTS)
+    out = buffer.getvalue()
+    assert "\x1b" not in out
+    assert "╭" not in out
+    assert "│" not in out
+    assert "Dados: items=1, accounts=2" in out
+
+
+def test_table_cells_are_verbatim_and_free_of_escape_sequences(monkeypatch):
+    buffer = terminal(monkeypatch, 160)
+    ui.status_items([ui.ItemRow(TRICKY, TRICKY + "\x1b[2J", "a\x1b]0;title\x07b", "c\x1bd")])
+    raw = buffer.getvalue()
+    out = strip_ansi(raw)
+    assert out.count(TRICKY) == 2  # the id and the connector: brackets and emoji codes untouched
+    assert "ab" in out
+    assert "cd" in out
+    for sequence in ("\x1b[2J", "\x1b]0;", "\x1bd"):
+        assert sequence not in raw
+    assert "\x1b" not in out
+
+
+def test_counts_table_is_free_of_escape_sequences(monkeypatch):
+    buffer = terminal(monkeypatch, 80)
+    ui.data_counts({"a\x1b[2Jb": 1})
+    assert "\x1b[2J" not in buffer.getvalue()
+    assert "ab=1" in strip_ansi(buffer.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# Prompt label
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_label_is_unchanged_off_a_terminal(plain):
+    assert ui.prompt_label("\nVocê") == "\nVocê"
+
+
+def test_prompt_label_is_styled_on_a_terminal(tty):
+    label = ui.prompt_label("\nVocê")
+    assert "\x1b[" in label
+    assert strip_ansi(label) == "\nVocê"
+
+
+def test_prompt_label_respects_no_color(tty, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert ui.prompt_label("\nVocê") == "\nVocê"

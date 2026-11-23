@@ -8,6 +8,7 @@ Commands: ``chat`` (default), ``ask``, ``sync``, ``status``, ``connect``, ``item
 Structure follows ``apexmusic.__main__``: a global ``_state`` filled by the Typer callback,
 ``_handle_*`` functions holding the logic (return exit codes) and thin ``@app.command`` wrappers. The chat/sync
 core shared with other front ends lives in :mod:`llmopenfinance.session`; this module renders its notices.
+Everything printed goes through :mod:`llmopenfinance.ui`, which styles on a terminal and prints plain text elsewhere.
 Every user-visible text comes from the message catalog (``t("cli.*")`` / ``t("chat.*")``) in the language of
 ``LLMOPENFINANCE_LANG``, which is validated before the Typer app is built.
 """
@@ -25,6 +26,7 @@ from typing import Annotated, Any
 
 import typer
 
+from llmopenfinance import __version__, ui
 from llmopenfinance.constants import (
     DEFAULT_DB_PATH,
     DEFAULT_PROVIDER,
@@ -93,12 +95,22 @@ _state = _State()
 app = typer.Typer(
     name="finassist",
     help=t("cli.app.help"),
+    epilog=t(
+        "cli.epilog",
+        provider=ENV_PROVIDER,
+        db=ENV_DB_PATH,
+        lang=ENV_LANG,
+        user=ENV_PLUGGY_CLIENT_ID,
+        secret=ENV_PLUGGY_CLIENT_SECRET,
+        items=ENV_PLUGGY_ITEM_IDS,
+    ),
     invoke_without_command=True,
     add_completion=False,
     rich_markup_mode="rich",
+    pretty_exceptions_show_locals=False,
 )
 items_app = typer.Typer(help=t("cli.items.help"), no_args_is_help=True)
-app.add_typer(items_app, name="items")
+app.add_typer(items_app, name="items", rich_help_panel=t("cli.panel.connections"))
 
 
 @app.callback()
@@ -114,9 +126,7 @@ def _configure(
 ) -> None:
     """Record the global options and start the chat when no command is given."""
     if version:
-        from llmopenfinance import __version__
-
-        typer.echo(f"llmopenfinance {__version__}")
+        ui.show_notice(Notice("info", f"llmopenfinance {__version__}"))
         raise typer.Exit(code=0)
     _state.verbose = verbose
     _state.provider = provider
@@ -199,43 +209,6 @@ def _factories() -> Factories:
     return Factories(llm=_llm, open_store=_open_store, pluggy_client=_pluggy_client)
 
 
-def _echo_dim(text: str) -> None:
-    typer.secho(text, fg=typer.colors.BRIGHT_BLACK)
-
-
-_NOTICE_COLOURS = {
-    "ok": typer.colors.GREEN,
-    "warn": typer.colors.YELLOW,
-    "error": typer.colors.RED,
-    "dim": typer.colors.BRIGHT_BLACK,
-}
-
-
-def _render_notice(notice: Notice) -> None:
-    colour = _NOTICE_COLOURS.get(notice.level)
-    if colour is None:
-        typer.echo(notice.text)
-    else:
-        typer.secho(notice.text, fg=colour)
-
-
-def _render_notices(notices: tuple[Notice, ...]) -> None:
-    for notice in notices:
-        _render_notice(notice)
-
-
-def _print_item_result(result: Any) -> None:
-    if not result.ok:
-        typer.secho(f"  ✗ {result.item_id}: {result.error}", fg=typer.colors.RED)
-    elif result.skipped:
-        _echo_dim(f"  = {result.item_id}: {t('cli.sync.unchanged')}")
-    else:
-        counts = ", ".join(f"{k}={v}" for k, v in result.counts.items())
-        typer.secho(f"  ✓ {result.item_id}: {counts}", fg=typer.colors.GREEN)
-    for warning in result.warnings:
-        typer.secho(f"    ! {warning}", fg=typer.colors.YELLOW)
-
-
 def _run_sync(*, force: bool = False) -> int:
     """Synchronize every registered item into the local store.
 
@@ -245,7 +218,7 @@ def _run_sync(*, force: bool = False) -> int:
     Returns:
         int: Exit code (0 when at least one item synced or nothing to do).
     """
-    return run_sync(_factories(), force=force, notify=_render_notice, on_item=_print_item_result)
+    return run_sync(_factories(), force=force, notify=ui.show_notice, on_item=ui.item_result)
 
 
 _ChatSession = ChatSession
@@ -268,7 +241,7 @@ def _build_assistant(session: ChatSession, *, think: bool, enable_sql: bool | No
         provider=_state.provider,
         model=_state.model,
         options=BuildOptions(think=think, enable_sql=enable_sql),
-        notify=_render_notice,  # each line as it happens, so "verifying" shows before the slow check
+        notify=ui.show_notice,  # each line as it happens, so "verifying" shows before the slow check
     )
     return build.assistant
 
@@ -283,22 +256,7 @@ def _render_answer(assistant: Any, question: str) -> bool:
     Returns:
         bool: ``False`` if the answer failed (an error was shown).
     """
-    from llmopenfinance.agent import AssistantError, ToolStatus
-    from llmopenfinance.chat import TextDelta
-
-    ok = True
-    typer.echo(f"\n{t('chat.assistant_label')}: ", nl=False)
-    for event in assistant.ask(question):
-        if isinstance(event, TextDelta):
-            typer.echo(event.text, nl=False)
-        elif isinstance(event, ToolStatus):
-            args = ", ".join(f"{k}={v!r}" for k, v in event.call.arguments.items())
-            _echo_dim("\n  " + t("chat.tool_status", name=event.call.name, args=args[:120]))
-        elif isinstance(event, AssistantError):
-            ok = False
-            typer.secho("\n" + t("chat.error", message=event.message), fg=typer.colors.RED)
-    typer.echo("\n")
-    return ok
+    return ui.render_answer(assistant.ask(question))
 
 
 def _help_text() -> str:
@@ -328,9 +286,10 @@ def _process_chat_cmd(user_input: str, assistant: Any, session: ChatSession) -> 
     if command is None:
         return None
     if command == "exit":
-        typer.echo("\n" + t("chat.goodbye"))
+        ui.show_notice(Notice("info", "\n" + t("chat.goodbye")))
         return False
-    _render_notices(run_command(command, assistant, session, _run_sync))
+    for notice in run_command(command, assistant, session, _run_sync):
+        ui.show_notice(notice)
     return True
 
 
@@ -354,7 +313,19 @@ def _handle_input(user_input: str, assistant: Any, session: ChatSession) -> bool
     return result is not False
 
 
-def _chat_loop(assistant: Any, session: ChatSession, prompt: Callable[[str], str] = typer.prompt) -> int:
+def _prompt(label: str) -> str:
+    """Read one line from the user; the label is styled when the terminal shows colour.
+
+    Args:
+        label: Prompt text.
+
+    Returns:
+        str: What the user typed.
+    """
+    return typer.prompt(ui.prompt_label(label))
+
+
+def _chat_loop(assistant: Any, session: ChatSession, prompt: Callable[[str], str] = _prompt) -> int:
     """Run the interactive chat loop until the user exits.
 
     Args:
@@ -370,10 +341,10 @@ def _chat_loop(assistant: Any, session: ChatSession, prompt: Callable[[str], str
             if not _handle_input(prompt("\n" + t("chat.prompt_label")), assistant, session):
                 return 0
         except KeyboardInterrupt:
-            typer.echo("\n" + t("chat.interrupted"))
+            ui.show_notice(Notice("dim", "\n" + t("chat.interrupted")))
             continue
         except (EOFError, typer.Abort):
-            typer.echo("\n" + t("chat.goodbye"))
+            ui.show_notice(Notice("info", "\n" + t("chat.goodbye")))
             return 0
         except Exception:
             logger.exception("Chat error")
@@ -389,7 +360,7 @@ def _maybe_sync(*, sync: bool) -> None:
     if not sync:
         return
     if not has_pluggy_credentials():
-        _echo_dim(t("cli.sync.skipped_no_credentials"))
+        ui.show_notice(Notice("dim", t("cli.sync.skipped_no_credentials")))
         return
     _run_sync()
 
@@ -412,9 +383,10 @@ def _handle_chat(*, sync: bool = True, think: bool = False, enable_sql: bool | N
         if assistant is None:
             return 1
         if session.store.counts()["transactions"] == 0:
-            typer.secho(t("chat.no_transactions"), fg=typer.colors.YELLOW)
-        typer.echo("\n" + t("chat.ready") + " " + _help_text().splitlines()[0])
-        typer.echo("=" * 70)
+            ui.show_notice(Notice("warn", t("chat.no_transactions")))
+        ui.banner(assistant.chat.provider, assistant.chat.model, get_language(), __version__)
+        ui.show_notice(Notice("info", "\n" + t("chat.ready") + " " + _help_text().splitlines()[0]))
+        ui.show_notice(Notice("dim", "=" * 70))
         return _chat_loop(assistant, session)
     finally:
         session.close()
@@ -452,18 +424,38 @@ def _handle_status() -> int:
         items = store.list_items()
         counts = store.counts()
         last_sync = store.get_meta("last_sync")
-    typer.echo(t("cli.status.database", path=_state.db_path))
-    typer.echo(t("cli.status.last_sync", when=last_sync or t("cli.status.never")))
-    typer.echo(t("cli.status.data", counts=", ".join(f"{k}={v}" for k, v in counts.items())))
+    ui.show_notice(Notice("info", t("cli.status.database", path=_state.db_path)))
+    ui.show_notice(Notice("info", t("cli.status.last_sync", when=last_sync or t("cli.status.never"))))
+    ui.data_counts(counts)
     if not items:
-        typer.echo(t("cli.no_connections"))
-    for item in items:
-        line = f"- {item['id']}  {item.get('connector_name') or '?'}  status={item.get('status') or '?'}"
-        expires = item.get("consent_expires_at")
-        if expires:
-            line += "  " + t("cli.status.consent_until", date=format_date(expires))
-        typer.echo(line)
+        ui.show_notice(Notice("info", t("cli.no_connections")))
+    ui.status_items(_item_rows(items, no_status="?", consent=True))
     return 0
+
+
+def _item_rows(items: list[dict[str, Any]], *, no_status: str, consent: bool) -> list[ui.ItemRow]:
+    """Turn store items into the rows ``ui`` prints.
+
+    Args:
+        items: Rows of ``FinanceStore.list_items``.
+        no_status: Text for an item that has no status yet.
+        consent: Fill the consent text (``consentimento até ...``) when the item has an expiry date.
+
+    Returns:
+        list[ui.ItemRow]: One row per item, in the same order.
+    """
+    rows = []
+    for item in items:
+        expires = item.get("consent_expires_at")
+        rows.append(
+            ui.ItemRow(
+                item_id=item["id"],
+                connector=item.get("connector_name") or "?",
+                status=item.get("status") or no_status,
+                consent=t("cli.status.consent_until", date=format_date(expires)) if consent and expires else "",
+            )
+        )
+    return rows
 
 
 def _handle_items_add(item_ids: list[str], *, verify: bool = True) -> int:
@@ -486,16 +478,17 @@ def _handle_items_add(item_ids: list[str], *, verify: bool = True) -> int:
                 try:
                     item = client.get_item(item_id)
                 except PluggyError as exc:
-                    typer.secho(f"✗ {item_id}: {exc}", fg=typer.colors.RED)
+                    ui.show_notice(Notice("error", f"✗ {item_id}: {exc}"))
                     failed += 1
                     continue
                 store.add_item(item_id)
                 store.update_item(item)
-                typer.echo(f"✓ {item_id} ({(item.get('connector') or {}).get('name', '?')}, {item.get('status')})")
+                connector = (item.get("connector") or {}).get("name", "?")
+                ui.show_notice(Notice("ok", f"✓ {item_id} ({connector}, {item.get('status')})"))
             else:
                 added = store.add_item(item_id)
                 note = "" if added else " " + t("cli.items.already_registered")
-                typer.echo(f"{'✓' if added else '='} {item_id}{note}")
+                ui.show_notice(Notice("ok" if added else "dim", f"{'✓' if added else '='} {item_id}{note}"))
     if client is not None:
         client.close()
     return 1 if failed else 0
@@ -510,10 +503,8 @@ def _handle_items_list() -> int:
     with _open_store(read_only=True) as store:
         items = store.list_items()
     if not items:
-        typer.echo(t("cli.no_connections"))
-    for item in items:
-        status = item.get("status") or t("cli.items.not_synced")
-        typer.echo(f"{item['id']}  {item.get('connector_name') or '?'}  {status}")
+        ui.show_notice(Notice("info", t("cli.no_connections")))
+    ui.item_list(_item_rows(items, no_status=t("cli.items.not_synced"), consent=False))
     return 0
 
 
@@ -529,9 +520,9 @@ def _handle_items_remove(item_id: str) -> int:
     with _open_store() as store:
         removed = store.remove_item(item_id)
     if removed:
-        typer.echo(t("cli.items.removed", item_id=item_id))
+        ui.show_notice(Notice("ok", t("cli.items.removed", item_id=item_id)))
     else:
-        typer.echo(t("cli.items.not_found", item_id=item_id))
+        ui.show_notice(Notice("warn", t("cli.items.not_found", item_id=item_id)))
     return 0 if removed else 1
 
 
@@ -551,17 +542,17 @@ def _connect_items(client: Any, *, sandbox: bool) -> list[str]:
 
         def _on_item(item_id: str) -> None:
             store.add_item(item_id)
-            typer.echo(t("cli.connect.received", item_id=item_id))
+            ui.show_notice(Notice("info", t("cli.connect.received", item_id=item_id)))
             item = wait_for_item(client, item_id)
             store.update_item(item)
-            typer.echo(f"  status: {item.get('status')} ({item.get('executionStatus')})")
+            ui.show_notice(Notice("info", f"  status: {item.get('status')} ({item.get('executionStatus')})"))
 
-        typer.echo(t("cli.connect.opening"))
+        ui.show_notice(Notice("info", t("cli.connect.opening")))
         return run_connect_flow(
             client,
             _on_item,
             sandbox=sandbox,
-            on_url=lambda url: _echo_dim(t("cli.connect.browser_hint", url=url)),
+            on_url=lambda url: ui.show_notice(Notice("dim", t("cli.connect.browser_hint", url=url))),
         )
 
 
@@ -578,21 +569,19 @@ def _handle_connect(*, sandbox: bool = False, sync: bool = True) -> int:
     from llmopenfinance.pluggy import PluggyError
 
     if not has_pluggy_credentials():
-        typer.secho(
-            t("cli.connect.missing_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET),
-            fg=typer.colors.RED,
-        )
+        missing = t("cli.connect.missing_credentials", id_var=ENV_PLUGGY_CLIENT_ID, secret_var=ENV_PLUGGY_CLIENT_SECRET)
+        ui.show_notice(Notice("error", missing))
         return 1
     client = _pluggy_client()
     try:
         received = _connect_items(client, sandbox=sandbox)
     except PluggyError as exc:
-        typer.secho(t("cli.connect.pluggy_failed", error=exc), fg=typer.colors.RED)
+        ui.show_notice(Notice("error", t("cli.connect.pluggy_failed", error=exc)))
         return 1
     finally:
         client.close()
     if not received:
-        typer.echo(t("cli.connect.none_created"))
+        ui.show_notice(Notice("warn", t("cli.connect.none_created")))
         return 1
     return _run_sync() if sync else 0
 
@@ -602,7 +591,7 @@ def _handle_connect(*, sandbox: bool = False, sync: bool = True) -> int:
 # ---------------------------------------------------------------------------
 
 
-@app.command(help=t("cli.chat.help"))
+@app.command(help=t("cli.chat.help"), rich_help_panel=t("cli.panel.chat"))
 def chat(
     sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.chat.sync"))] = True,
     think: Annotated[bool, typer.Option("--think", help=t("cli.chat.think"))] = False,
@@ -612,7 +601,7 @@ def chat(
     raise typer.Exit(code=_handle_chat(sync=sync, think=think, enable_sql=sql))
 
 
-@app.command(help=t("cli.ask.help"))
+@app.command(help=t("cli.ask.help"), rich_help_panel=t("cli.panel.chat"))
 def ask(
     question: Annotated[str, typer.Argument(help=t("cli.ask.question"))],
     sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.ask.sync"))] = False,
@@ -622,19 +611,19 @@ def ask(
     raise typer.Exit(code=_handle_ask(question, sync=sync, enable_sql=sql))
 
 
-@app.command(help=t("cli.sync.help"))
+@app.command(help=t("cli.sync.help"), rich_help_panel=t("cli.panel.data"))
 def sync(force: Annotated[bool, typer.Option("--force", help=t("cli.sync.force"))] = False) -> None:
     """Sync every registered item from Pluggy."""
     raise typer.Exit(code=_run_sync(force=force))
 
 
-@app.command(help=t("cli.status.help"))
+@app.command(help=t("cli.status.help"), rich_help_panel=t("cli.panel.data"))
 def status() -> None:
     """Show registered connections, consents and local data counts."""
     raise typer.Exit(code=_handle_status())
 
 
-@app.command(help=t("cli.connect.help"))
+@app.command(help=t("cli.connect.help"), rich_help_panel=t("cli.panel.connections"))
 def connect(
     sandbox: Annotated[bool, typer.Option("--sandbox", help=t("cli.connect.sandbox"))] = False,
     sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.connect.sync"))] = True,
@@ -667,9 +656,7 @@ def items_remove(item_id: Annotated[str, typer.Argument(help=t("cli.items.remove
 @app.command("ver", help=t("cli.ver.help"))
 def version_cmd() -> None:
     """Print the version."""
-    from llmopenfinance import __version__
-
-    typer.echo(f"llmopenfinance {__version__}")
+    ui.show_notice(Notice("info", f"llmopenfinance {__version__}"))
 
 
 # ---------------------------------------------------------------------------

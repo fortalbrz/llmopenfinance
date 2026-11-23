@@ -22,6 +22,35 @@ These go **before** the command, for example `finassist --provider ollama chat`.
 | `ANTHROPIC_API_KEY` (or `CLAUDE_TOKEN`) | Claude API key |
 | `OLLAMA_SERVER` / `OLLAMA_HOST` | Ollama URL (default `http://localhost:11434`) |
 | `LLMOPENFINANCE_LANG` | Language of the whole application: `pt-BR` (default) or `en`. See [Language](#language) |
+| `NO_COLOR` | Any non-empty value turns off colours, panels and tables, even on a terminal. See [Look and feel](#look-and-feel) |
+
+`finassist --help` lists the commands in three groups (Chat: `chat`, `ask`; Data: `sync`, `status`; Connections: `connect`,
+`items`) and ends with a list of the main variables: `LLMOPENFINANCE_PROVIDER`, `LLMOPENFINANCE_DB`,
+`LLMOPENFINANCE_LANG`, `PLUGGY_USERNAME`, `PLUGGY_PASSWORD` and `PLUGGY_ITEM_IDS`.
+
+## Look and feel
+
+The terminal front end is styled with [Rich](https://rich.readthedocs.io), but only where styling helps:
+
+| | On an interactive terminal | Piped, redirected or `NO_COLOR` set |
+|---|---|---|
+| Messages | Coloured by meaning: green for success, yellow for warnings, red for errors, dim for side notes | Plain text, no escape codes |
+| `chat` start | A banner panel with the app version, provider, model and language | Two plain lines: `finassist <version>` and `Provider: …, Model: …, Language: …` |
+| Answers | Markdown in a titled panel that grows while it streams, with a spinner line for each tool call | The answer streamed as plain text, one status line per tool call |
+| `status` | A table of the local data counts (`transactions=…`) and a table of the connections (ID, connector, status, consent) | Lines: `Dados: k=v, …` and `- id  connector  status=…  consentimento até …` |
+| `items list` | A table (ID, connector, status) | Lines: `id  connector  status` |
+| `--help` | Grouped panels and the environment-variable epilog | The same text, without colours |
+
+- The plain output is the wording and the bytes `finassist` always printed, so `finassist ask "…" > out.txt` and
+  `finassist status | grep …` keep working. The banner is shown only by `chat`: `ask`, `sync`, `status`, `items` and
+  `connect` print nothing extra.
+- Tables never cut a cell. The ID column folds onto several lines when the terminal is narrow; if the other columns leave
+  it fewer than 12 columns (a terminal narrower than roughly 70 columns for `status`), each item is printed as one plain
+  line instead.
+- Text that comes from outside (model answers, merchant names, item ids) is shown as it is: it is never read as Rich
+  markup, and terminal escape sequences inside it are removed.
+- Model answers are Markdown, but links are shown as text only, never as clickable terminal hyperlinks.
+- The prompt label (`Você` / `You`) is bold cyan on a terminal.
 
 ## Language
 
@@ -57,6 +86,9 @@ finassist [GLOBAL OPTIONS] chat [--sync/--no-sync] [--think] [--sql/--no-sql]
 - `--no-sync` skips the Pluggy sync at start-up. It is skipped automatically when the Pluggy credentials are missing.
 - `--think` turns on Ollama's thinking mode. It is slower, but it uses tools more reliably on small models.
 - `--sql/--no-sql` exposes the guarded `run_sql` tool. By default it is on for Claude and off for Ollama.
+
+When the chat starts it shows the banner (version, provider, model and language), then the usual ready line. See
+[Look and feel](#look-and-feel).
 
 In-chat commands:
 
@@ -100,7 +132,8 @@ database read-only.
 
 ### `status`
 
-Shows the database path, the last sync, row counts and every connection with its status and consent expiry date.
+Shows the database path, the last sync, row counts and every connection with its status and consent expiry date. On a
+terminal the counts and the connections are tables; piped, they are plain lines (see [Look and feel](#look-and-feel)).
 
 ### `connect`
 
@@ -119,6 +152,7 @@ finassist items remove <id>
 ```
 
 `add` validates each id with Pluggy when the credentials are available. `remove` also deletes that item's local data.
+`list` prints a table on a terminal and one plain line per connection otherwise.
 
 ## Choosing a model
 

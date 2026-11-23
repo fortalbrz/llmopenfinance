@@ -228,4 +228,21 @@ Open Finance (Pluggy) into a local database. Rules:
     "ui.banner.provider": "Provider",
     "ui.banner.model": "Model",
     "ui.banner.language": "Language",
+    "ui.table.id": "ID",
+    "ui.table.connector": "Connector",
+    "ui.table.status": "Status",
+    "ui.table.consent": "Consent",
+    "ui.table.data": "Data",
+    "cli.panel.chat": "Chat",
+    "cli.panel.data": "Data",
+    "cli.panel.connections": "Connections",
+    "cli.epilog": (
+        "Environment variables:\n"
+        "{provider:<25}default AI provider: claude | ollama\n"
+        "{db:<25}local DuckDB file\n"
+        "{lang:<25}language: pt-BR | en\n"
+        "{user:<25}Pluggy application clientId\n"
+        "{secret:<25}Pluggy application clientSecret\n"
+        "{items:<25}Pluggy item ids, comma separated"
+    ),
 }

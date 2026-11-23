@@ -232,4 +232,21 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "ui.banner.provider": "Provedor",
     "ui.banner.model": "Modelo",
     "ui.banner.language": "Idioma",
+    "ui.table.id": "ID",
+    "ui.table.connector": "Conector",
+    "ui.table.status": "Status",
+    "ui.table.consent": "Consentimento",
+    "ui.table.data": "Dados",
+    "cli.panel.chat": "Conversa",
+    "cli.panel.data": "Dados",
+    "cli.panel.connections": "Conexões",
+    "cli.epilog": (
+        "Variáveis de ambiente:\n"
+        "{provider:<25}provedor de IA padrão: claude | ollama\n"
+        "{db:<25}arquivo DuckDB local\n"
+        "{lang:<25}idioma: pt-BR | en\n"
+        "{user:<25}clientId da aplicação Pluggy\n"
+        "{secret:<25}clientSecret da aplicação Pluggy\n"
+        "{items:<25}item ids da Pluggy, separados por vírgula"
+    ),
 }

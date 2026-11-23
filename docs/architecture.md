@@ -2,7 +2,12 @@
 
 ```text
 src/llmopenfinance/
-├── __main__.py    Typer CLI. _state callback, _handle_* logic, thin commands (pattern from apexmusicmachine)
+├── __main__.py    Typer CLI. _state callback, _handle_* logic, thin commands (pattern from apexmusicmachine); prints only through ui.py
+├── ui.py          Rich console helpers: themed notices, banner, tables, live Markdown answer; plain text off a terminal
+├── session.py     Chat/sync core shared by every front end, with no printing: ChatSession, build_assistant, chat commands, run_sync
+├── i18n.py        Process language (LLMOPENFINANCE_LANG), t(key, **vars), language-aware money and dates
+├── messages_pt.py pt-BR message catalog (default; fallback for a key missing elsewhere)
+├── messages_en.py English message catalog (same keys and placeholders as pt-BR)
 ├── constants.py   Defaults: models, URLs, limits, environment variable names
 ├── pluggy.py      Thin httpx client: API-key cache, 429/5xx retries, page/cursor pagination
 ├── connect.py     Pluggy Connect widget on a loopback page; polls items until they settle
@@ -12,7 +17,7 @@ src/llmopenfinance/
 ├── analytics.py   Deterministic SQL analytics, recurring-charge detection, guarded SELECT, snapshot
 ├── tools.py       Provider-agnostic tool registry: validation, memoization, output caps
 ├── chat.py        AbstractChat, OllamaChat, ClaudeChat (raw HTTP + SSE) with tool calling
-└── agent.py       pt-BR system prompt and the tool loop (FinanceAssistant)
+└── agent.py       System prompt (pt-BR or en, by language) and the tool loop (FinanceAssistant)
 ```
 
 ## Data flow
@@ -24,11 +29,29 @@ src/llmopenfinance/
      (opened read-write).
 2. **Chat**:
    - DuckDB is reopened **read-only** with external access disabled and its configuration locked.
-   - `build_snapshot` turns the aggregates into roughly 1–2k tokens of pt-BR text, appended to the system prompt.
+   - `build_snapshot` turns the aggregates into roughly 1–2k tokens of text (pt-BR or en), appended to the system prompt.
    - `FinanceAssistant.ask` runs a loop:
      1. stream a model turn;
      2. if the model requests tools, `ToolRegistry.run` executes them and feeds the results back;
      3. repeat. After `MAX_TOOL_ROUNDS` (6) rounds the model is forced to answer.
+
+## Terminal front end and language
+
+- **One language per process.** `i18n` resolves `LLMOPENFINANCE_LANG` once, on first use, and freezes it. Every
+  application-generated text is a catalog key (`t("area.name", **vars)`) in `messages_pt` and `messages_en`; guard
+  tests require the same keys and placeholders in both catalogs and every literal key used in the source to exist.
+  Stored data (Pluggy values, category labels, descriptions) is never translated.
+- **`session` renders nothing.** It returns `Notice(level, text)` values and calls per-item callbacks, so the CLI (and
+  later other front ends) decide how to show them. The factories for the LLM, the store and the Pluggy client are
+  injected, which keeps `__main__._llm`, `_open_store` and `_pluggy_client` the patch points of the tests.
+- **`ui` is the only place that decides how output looks, and it decides per call.** Styled output (colours, panels,
+  tables, the live Markdown answer) needs an interactive terminal and an unset `NO_COLOR`. Everywhere else (pipes,
+  `CliRunner`) it prints the exact plain text the CLI always printed, written as raw segments so no byte changes.
+  Dynamic text is wrapped in `rich.text.Text` (never parsed as markup) and stripped of terminal escape sequences.
+- **Tables exist only on a terminal.** Scripts keep the one-line-per-item format. A table never crops a cell: the
+  ID column folds, the others stay on one line, and `ui` falls back to plain lines when they would not fit.
+- **Typer help** is built at import (`help=`, panel titles and epilog come from the catalog), which is why the language
+  must be known before the app is created and why there is no `--lang` option.
 
 ## Key decisions
 
@@ -81,4 +104,6 @@ The project follows the non-stop batch policy from AGENTS.md:
 | `test_store.py`, `test_categorize.py` | Mappers, date and sign rules, sandbox enforcement |
 | `test_analytics.py`, `test_tools.py` | Exact aggregates, subscription detection, SQL guard and timeout, argument validation |
 | `test_chat.py` | Ollama with a fake client; Claude with recorded SSE (thinking, tool use, `max_tokens`, error events, retries) |
-| `test_agent.py`, `test_sync.py`, `test_connect.py`, `test_cli.py` | Tool loop and rollback, resilient sync, loopback server, CLI end to end |
+| `test_agent.py`, `test_sync.py`, `test_connect.py`, `test_cli.py` | Tool loop and rollback, resilient sync, loopback server, CLI end to end (plain output off a terminal; tables, banner and styled prompt on a forced terminal) |
+| `test_i18n.py`, `test_catalog.py` | Language resolution, `t()` fallbacks, date and money formats; catalog parity, placeholders and source-scan guards |
+| `test_session.py`, `test_ui.py` | Notices and commands without a terminal; `ui` in plain, styled and `NO_COLOR` modes, verbatim dynamic text, escape stripping, tables at 80 and 120 columns |

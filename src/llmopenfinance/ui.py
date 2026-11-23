@@ -9,16 +9,22 @@ Text handed to a helper (model answers, merchant names, item ids, ...) is data. 
 or emoji: styled output wraps it in :class:`rich.text.Text`, plain output writes it as raw segments. It is also
 stripped of terminal escape sequences (:func:`_clean`), so third-party text cannot drive the user's terminal or
 corrupt piped output.
+
+Tables (the data counts and the connections of ``status`` and ``items list``) exist only in the styled rendering.
+Their plain counterpart is the one-line-per-item text the CLI always printed, so scripts keep a stable format.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+import typer
+from rich import box
+from rich.cells import cell_len
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
@@ -38,13 +44,18 @@ if TYPE_CHECKING:
 
 __all__ = [
     "THEME",
+    "ItemRow",
     "banner",
     "console",
+    "data_counts",
     "interactive",
+    "item_list",
     "item_result",
     "key_value_line",
+    "prompt_label",
     "render_answer",
     "show_notice",
+    "status_items",
 ]
 
 _APP_NAME = "finassist"
@@ -55,6 +66,8 @@ _CSI = re.compile(r"\x1b\[[;?0-9]*[a-zA-Z]")
 # OSC sequences (window title, hyperlinks, ...): ``ESC ]``, a payload, then BEL or ``ESC \``.
 _OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _LIVE_REFRESHES_PER_SECOND = 10
+_MIN_ID_WIDTH = 12  # below this the id column would fold into slivers: show one line per item instead
+_DETAIL_STYLES = ("", "", "dim")  # connector, status, consent
 
 THEME = Theme(
     {
@@ -79,6 +92,9 @@ _Kind = Literal["text", "tool", "error"]
 
 def interactive() -> bool:
     """Tell whether the console is attached to an interactive terminal.
+
+    This is only the terminal check. It is NOT "output is styled": styling also needs ``NO_COLOR`` unset, and
+    that is decided per call by :func:`_styled`, which every helper uses.
 
     Returns:
         bool: ``True`` when the console writes to a terminal.
@@ -106,6 +122,9 @@ def _clean(text: str) -> str:
     reach the user's terminal (clear the screen, retitle the window, ...) or corrupt piped output. CSI sequences
     go first, exactly as ``typer.echo`` strips them off a terminal, then OSC sequences, then any ESC left over
     (a lone or truncated sequence). Text without an ESC character is returned unchanged.
+
+    Each call sees one piece of text, so an escape sequence split across two streamed deltas is not recognised as
+    one sequence: only its ESC characters are removed and the rest of it shows as plain text.
 
     Args:
         text: Data to sanitise.
@@ -201,6 +220,181 @@ def banner(provider: str, model: str, language: str, version: str) -> None:
     console.print(Panel.fit(grid, title=panel_title, title_align="left", border_style="accent"))
 
 
+def prompt_label(label: str) -> str:
+    """Style the label of an input prompt (bold cyan), or return it unchanged when styling is off.
+
+    ``typer.prompt`` writes the label itself, through Typer's own echo, so the terminal and ``NO_COLOR`` decision
+    has to be taken here: off a terminal the label is plain text and the prompt output is byte-identical to the
+    old one.
+
+    Args:
+        label: The prompt text, such as ``"\\nVocê"``.
+
+    Returns:
+        str: ``label`` wrapped in style codes on a terminal with ``NO_COLOR`` unset, ``label`` otherwise.
+    """
+    return typer.style(label, fg=typer.colors.CYAN, bold=True) if _styled() else label
+
+
+@dataclass(frozen=True)
+class ItemRow:
+    """One registered connection as ``status`` and ``items list`` show it.
+
+    Attributes:
+        item_id: Pluggy item id.
+        connector: Connector name (``?`` when unknown).
+        status: Item status, or the "not synced" text.
+        consent: Consent line such as ``consentimento até 01/06/2027``; empty when there is no expiry date.
+    """
+
+    item_id: str
+    connector: str
+    status: str
+    consent: str = ""
+
+
+def data_counts(counts: Mapping[str, int]) -> None:
+    """Print the local data counts: a titled table of ``key=value`` cells on a terminal, one line otherwise.
+
+    The plain line is the ``Dados: k=v, k=v`` line of ``status``, unchanged.
+
+    Args:
+        counts: Row count per table, in display order.
+    """
+    if not _styled():
+        _say(t("cli.status.data", counts=key_value_line(counts)))
+        return
+    table = Table(
+        title=Text(t("ui.table.data"), style="accent"),
+        title_justify="left",
+        box=box.ROUNDED,
+        show_header=False,
+        border_style="dim",
+    )
+    table.add_column(no_wrap=True)
+    for key, value in counts.items():
+        table.add_row(Text(_clean(f"{key}={value}")))
+    console.print(table, crop=False)
+
+
+def status_items(rows: Sequence[ItemRow]) -> None:
+    """Print the connections for ``status``: a table (id, connector, status, consent) on a terminal, else lines.
+
+    The plain lines are ``- id  connector  status=X  consent`` exactly as ``status`` always printed them.
+
+    Args:
+        rows: One row per registered item; nothing is printed for an empty sequence.
+    """
+    _show_items(rows, consent=True)
+
+
+def item_list(rows: Sequence[ItemRow]) -> None:
+    """Print the connections for ``items list``: a table (id, connector, status) on a terminal, else lines.
+
+    The plain lines are ``id  connector  status`` exactly as ``items list`` always printed them.
+
+    Args:
+        rows: One row per registered item; nothing is printed for an empty sequence.
+    """
+    _show_items(rows, consent=False)
+
+
+def _show_items(rows: Sequence[ItemRow], *, consent: bool) -> None:
+    """Print the rows as a table when styling is on and the table fits, as one plain line per row otherwise.
+
+    Args:
+        rows: The items to show.
+        consent: ``True`` for the ``status`` layout (with consent), ``False`` for the ``items list`` layout.
+    """
+    if rows and _styled() and _items_fit(rows, consent=consent):
+        console.print(_items_table(rows, consent=consent), crop=False)
+        return
+    for row in rows:
+        _say(_item_line(row, consent=consent))
+
+
+def _item_line(row: ItemRow, *, consent: bool) -> str:
+    """Format one item as the plain line the CLI always printed.
+
+    Args:
+        row: The item.
+        consent: ``True`` for the ``status`` layout, ``False`` for the ``items list`` layout.
+
+    Returns:
+        str: The line, without a newline.
+    """
+    if not consent:
+        return f"{row.item_id}  {row.connector}  {row.status}"
+    line = f"- {row.item_id}  {row.connector}  status={row.status}"
+    return f"{line}  {row.consent}" if row.consent else line
+
+
+def _detail_headers(*, consent: bool) -> tuple[str, ...]:
+    """Name the columns that come after the id.
+
+    Args:
+        consent: Include the consent column.
+
+    Returns:
+        tuple[str, ...]: Localised headers: connector, status and, with ``consent``, consent.
+    """
+    headers = (t("ui.table.connector"), t("ui.table.status"))
+    return (*headers, t("ui.table.consent")) if consent else headers
+
+
+def _detail_cells(row: ItemRow, *, consent: bool) -> tuple[str, ...]:
+    """Return the cells that come after the id, matching :func:`_detail_headers`.
+
+    Args:
+        row: The item.
+        consent: Include the consent cell.
+
+    Returns:
+        tuple[str, ...]: Connector, status and, with ``consent``, consent.
+    """
+    return (row.connector, row.status, row.consent) if consent else (row.connector, row.status)
+
+
+def _items_fit(rows: Sequence[ItemRow], *, consent: bool) -> bool:
+    """Tell whether every cell but the id fits whole, leaving the id column room to fold.
+
+    Every column except the id is ``no_wrap``, so Rich would cut its text with an ellipsis once the table is wider
+    than the terminal. Measuring first lets the caller fall back to plain lines instead of cropping anything.
+
+    Args:
+        rows: The items to show.
+        consent: Whether the consent column is shown.
+
+    Returns:
+        bool: ``True`` when the id column keeps at least ``_MIN_ID_WIDTH`` columns.
+    """
+    matrix = [_detail_headers(consent=consent), *(_detail_cells(row, consent=consent) for row in rows)]
+    widths = [max(cell_len(_clean(cell)) for cell in column) for column in zip(*matrix, strict=True)]
+    chrome = 3 * (len(widths) + 1) + 1  # per column a border and two padding spaces, plus the closing border
+    return console.width - sum(widths) - chrome >= _MIN_ID_WIDTH
+
+
+def _items_table(rows: Sequence[ItemRow], *, consent: bool) -> Table:
+    """Build the connections table: the id column folds, every other cell stays on one line.
+
+    Cells are :class:`~rich.text.Text` objects holding cleaned text, never markup.
+
+    Args:
+        rows: The items to show.
+        consent: Add the consent column.
+
+    Returns:
+        Table: The table, ready to print.
+    """
+    table = Table(box=box.ROUNDED, header_style="accent", border_style="dim")
+    table.add_column(t("ui.table.id"), overflow="fold")
+    for header, style in zip(_detail_headers(consent=consent), _DETAIL_STYLES, strict=False):
+        table.add_column(header, style=style, no_wrap=True)
+    for row in rows:
+        table.add_row(Text(_clean(row.item_id)), *(Text(_clean(cell)) for cell in _detail_cells(row, consent=consent)))
+    return table
+
+
 def _parse(events: Iterable[AssistantEvent]) -> Iterator[tuple[_Kind, str]]:
     """Turn assistant events into ``(kind, display text)`` pairs shared by both renderers.
 
@@ -256,8 +450,11 @@ class _LiveView:
         answer, tools, errors, waiting = self.answer, self.tools, self.errors, self.waiting
         rows: list[RenderableType] = []
         if answer:
+            # hyperlinks=False: the model controls link targets, which must not become OSC 8 terminal hyperlinks
             label = Text(t("chat.assistant_label"))
-            rows.append(Panel(Markdown(answer), title=label, title_align="left", border_style="assistant"))
+            rows.append(
+                Panel(Markdown(answer, hyperlinks=False), title=label, title_align="left", border_style="assistant")
+            )
         rows.extend(Text(line, style="dim") for line in tools[:-1])
         status = tools[-1] if tools else (t("chat.assistant_label") if waiting else "")
         if status:

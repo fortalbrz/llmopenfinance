@@ -1,14 +1,17 @@
 """End-to-end CLI tests with Typer's CliRunner, a fake Pluggy client and a scripted LLM."""
 
+import io
 import os
+import re
 import subprocess  # ruff: ignore[suspicious-subprocess-import] — the startup guard needs a fresh interpreter
 import sys
 from collections.abc import Callable
 
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
-from llmopenfinance import __main__ as cli
+from llmopenfinance import __main__ as cli, __version__, ui
 from llmopenfinance.constants import ENV_LANG
 from llmopenfinance.i18n import reset_language, t
 from llmopenfinance.pluggy import PluggyError
@@ -859,3 +862,258 @@ PT_GOLDEN: list[tuple[str, dict[str, object], str]] = [
 @pytest.mark.parametrize(("key", "values", "expected"), PT_GOLDEN, ids=[row[0] for row in PT_GOLDEN])
 def test_pt_cli_strings_are_unchanged(key, values, expected):
     assert t(key, **values) == expected
+
+
+# ---------------------------------------------------------------------------
+# Rich restyle: grouped help, epilog, banner, no ANSI off a terminal, tables on a terminal
+# ---------------------------------------------------------------------------
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+ENV_VARS = (
+    "LLMOPENFINANCE_PROVIDER",
+    "LLMOPENFINANCE_DB",
+    "LLMOPENFINANCE_LANG",
+    "PLUGGY_USERNAME",
+    "PLUGGY_PASSWORD",
+    "PLUGGY_ITEM_IDS",
+)
+LONG_ID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789"  # 36 characters, like a Pluggy item id
+
+
+def forced_terminal(monkeypatch: pytest.MonkeyPatch, width: int) -> io.StringIO:
+    """Replace the ``ui`` console with a forced terminal; everything the CLI prints through ``ui`` lands here."""
+    buffer = io.StringIO()
+    console = Console(
+        file=buffer, theme=ui.THEME, width=width, force_terminal=True, color_system="standard", legacy_windows=False
+    )
+    monkeypatch.setattr(ui, "console", console)
+    return buffer
+
+
+def help_panels(output: str) -> dict[str, str]:
+    """Split ``--help`` output into ``{panel title: panel text}``."""
+    parts = re.split(r"^[┌╭]─ (.+?) ─+[┐╮]$", output, flags=re.MULTILINE)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def test_help_groups_commands():
+    output = runner.invoke(cli.app, ["--help"]).output
+    panels = help_panels(output)
+    groups = {
+        t("cli.panel.chat"): ("chat", "ask"),
+        t("cli.panel.data"): ("sync", "status"),
+        t("cli.panel.connections"): ("connect", "items"),
+    }
+    for title, commands in groups.items():
+        assert title in panels, output
+        for command in commands:
+            assert re.search(rf"^│ {command}\s", panels[title], flags=re.MULTILINE), (title, command)
+        assert not re.search(r"^│ ver\s", panels[title], flags=re.MULTILINE)  # ``ver`` stays ungrouped
+    for command in ("chat", "ask", "sync", "status", "connect", "items", "ver"):
+        assert command in output
+
+
+def test_help_panel_titles_are_localised():
+    assert (t("cli.panel.chat"), t("cli.panel.data"), t("cli.panel.connections")) == ("Conversa", "Dados", "Conexões")
+
+
+def test_epilog_lists_env_vars():
+    output = runner.invoke(cli.app, ["--help"]).output
+    assert "Variáveis de ambiente" in output
+    for name in ENV_VARS:
+        assert name in output
+    assert "Variáveis de ambiente" not in runner.invoke(cli.app, ["sync", "--help"]).output  # only the main help
+
+
+def test_help_en():
+    result = _cli_subprocess("en", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "Environment variables" in result.stdout
+    for name in ENV_VARS:
+        assert name in result.stdout
+    for title in ("Chat", "Data", "Connections"):
+        assert f"─ {title} ─" in result.stdout
+    assert "Assistente" not in result.stdout
+    assert "Variáveis" not in result.stdout
+    assert "Conexões" not in result.stdout
+
+
+def test_ask_output_has_no_ansi(env):
+    seed(env)
+    use_llm(
+        env, FakeLLM([tool_turn(ToolCall("c", "detect_subscriptions", {"months": 6})), answer("Você assina Netflix.")])
+    )
+    result = run(env, "ask", "Quais assinaturas eu tenho?")
+    assert result.exit_code == 0, result.output
+    assert "\x1b" not in result.output
+    assert "Você assina Netflix." in result.output
+    assert "consultando detect_subscriptions(months=6)" in result.output
+
+
+def test_output_has_no_ansi_even_when_the_runner_forces_colour(env):
+    # CliRunner(color=True) made the old typer.secho emit ANSI; every ``ui`` helper decides from the terminal itself.
+    seed(env)
+    use_llm(env, FakeLLM([answer("Você assina Netflix.")]))
+    argv = ["--db", env["db"], "ask", "x"]
+    for args in (argv, ["--db", env["db"], "status"], ["--db", env["db"], "items", "list"]):
+        result = runner.invoke(cli.app, args, color=True)
+        assert result.exit_code == 0, result.output
+        assert "\x1b" not in result.output, args
+
+
+def test_status_prints_plain_lines_off_a_terminal(env):
+    seed(env)
+    with FinanceStore(env["db"]) as store:
+        store.set_meta("last_sync", "2026-11-21T10:00:00")
+    output = run(env, "status").output
+    lines = output.splitlines()
+    assert lines[0] == f"Banco local: {env['db']}"
+    assert lines[1] == "Última sincronização: 2026-11-21T10:00:00"
+    assert lines[2].startswith("Dados: items=1, accounts=2, transactions=")
+    assert lines[3] == "- item-1  MeuPluggy  status=UPDATED  consentimento até 01/06/2027"
+    assert len(lines) == 4
+    assert "╭" not in output
+    assert "│" not in output
+
+
+def test_items_list_prints_plain_lines_off_a_terminal(env):
+    seed(env)
+    run(env, "items", "add", "a1", "--no-verify")
+    lines = run(env, "items", "list").output.splitlines()
+    assert sorted(lines) == sorted(
+        ["item-1  MeuPluggy  UPDATED", "a1  ?  não sincronizado"]
+    )  # same added_at: any order
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_status_tables_on_a_terminal_keep_the_asserted_substrings(env, monkeypatch, width):
+    seed(env)
+    run(env, "items", "add", LONG_ID, "--no-verify")
+    buffer = forced_terminal(monkeypatch, width)
+    result = run(env, "status")
+    out = ANSI.sub("", buffer.getvalue())
+    assert result.exit_code == 0, result.output
+    assert "╭" in out
+    assert all(len(line) <= width for line in out.splitlines())
+    assert "…" not in out  # no cell was cropped
+    assert "transactions=" in out
+    assert "consentimento até 01/06/2027" in out
+    assert "UPDATED" in out
+    assert "MeuPluggy" in out
+    assert "Banco local:" in out
+    assert "Nenhuma conexão" not in out
+    first_column = "".join(line.split("│")[1].strip() for line in out.splitlines() if line.startswith("│"))
+    assert LONG_ID in first_column  # the long id may fold at 80 columns, none of it is lost
+
+
+@pytest.mark.parametrize("width", [80, 120])
+def test_items_list_table_on_a_terminal_keeps_the_asserted_substrings(env, monkeypatch, width):
+    run(env, "items", "add", LONG_ID, "--no-verify")
+    buffer = forced_terminal(monkeypatch, width)
+    result = run(env, "items", "list")
+    out = ANSI.sub("", buffer.getvalue())
+    assert result.exit_code == 0, result.output
+    assert "╭" in out
+    assert all(len(line) <= width for line in out.splitlines())
+    assert "não sincronizado" in out
+    first_column = "".join(line.split("│")[1].strip() for line in out.splitlines() if line.startswith("│"))
+    assert LONG_ID in first_column
+
+
+def test_status_without_connections_on_a_terminal_has_no_items_table(env, monkeypatch):
+    buffer = forced_terminal(monkeypatch, 80)
+    assert run(env, "status").exit_code == 0
+    out = ANSI.sub("", buffer.getvalue())
+    assert "Nenhuma conexão registrada." in out
+    assert "Consentimento" not in out  # no items table, only the counts table
+
+
+def test_chat_shows_banner_with_language(env):
+    seed(env)
+    use_llm(env, FakeLLM([], provider="ollama"))
+    output = run(env, "chat", "--no-sync", input="sair\n").output
+    assert f"finassist {__version__}" in output
+    assert "Provedor: ollama, Modelo: fake-model, Idioma: pt-BR" in output
+    banner_at = output.index(f"finassist {__version__}")
+    assert banner_at < output.index("Assistente financeiro pronto.")
+    assert output.index("Verificando conexão") < banner_at  # the connection notices come first
+
+
+def test_chat_banner_follows_the_language(env, use_language: UseLanguage):
+    use_language("en")
+    seed(env)
+    use_llm(env, FakeLLM([], provider="claude"))
+    output = run(env, "chat", "--no-sync", input="exit\n").output
+    assert "Provider: claude, Model: fake-model, Language: en" in output
+    assert "Provedor" not in output
+
+
+def test_chat_banner_is_a_panel_on_a_terminal(env, monkeypatch):
+    seed(env)
+    use_llm(env, FakeLLM([], provider="ollama"))
+    buffer = forced_terminal(monkeypatch, 80)
+    assert run(env, "chat", "--no-sync", input="sair\n").exit_code == 0
+    out = ANSI.sub("", buffer.getvalue())
+    assert "╭" in out
+    assert f"finassist {__version__}" in out
+    for text in ("Provedor", "ollama", "Modelo", "fake-model", "Idioma", "pt-BR"):
+        assert text in out
+    assert "Assistente financeiro pronto." in out
+
+
+@pytest.mark.parametrize(
+    "args",
+    [("ask", "x"), ("status",), ("sync",), ("items", "list"), ("items", "add", "a1", "--no-verify"), ("connect",)],
+    ids=lambda args: args[0] + ("-" + args[1] if args[0] == "items" else ""),
+)
+def test_banner_not_shown_for_ask_and_status(env, args):
+    seed(env)
+    use_llm(env, FakeLLM([answer("ok")]))
+    env["monkeypatch"].delenv("PLUGGY_USERNAME")  # ``sync`` and ``connect`` stop at once, which is all that matters
+    output = run(env, *args).output
+    assert f"finassist {__version__}" not in output
+    assert "Provedor:" not in output
+    assert "Modelo:" not in output
+
+
+def test_chat_prompt_label_is_styled_on_a_terminal(env, monkeypatch):
+    seed(env)
+    use_llm(env, FakeLLM([]))
+    labels: list[str] = []
+
+    def fake_prompt(label):
+        labels.append(label)
+        return "sair"
+
+    monkeypatch.setattr(cli.typer, "prompt", fake_prompt)
+    forced_terminal(monkeypatch, 80)
+    assert run(env, "chat", "--no-sync").exit_code == 0
+    assert len(labels) == 1
+    assert "\x1b[" in labels[0]
+    assert ANSI.sub("", labels[0]) == "\nVocê"
+
+
+def test_chat_prompt_label_is_plain_off_a_terminal(env, monkeypatch):
+    seed(env)
+    use_llm(env, FakeLLM([]))
+    labels: list[str] = []
+
+    def fake_prompt(label):
+        labels.append(label)
+        return "sair"
+
+    monkeypatch.setattr(cli.typer, "prompt", fake_prompt)
+    assert run(env, "chat", "--no-sync").exit_code == 0
+    assert labels == ["\nVocê"]
+
+
+def test_render_answer_delegates_to_ui(monkeypatch):
+    seen: list[object] = []
+
+    class Assistant:
+        def ask(self, question):
+            return [question]
+
+    monkeypatch.setattr(ui, "render_answer", lambda events: seen.append(events) or False)
+    assert cli._render_answer(Assistant(), "q") is False
+    assert seen == [["q"]]
