@@ -147,7 +147,13 @@ class ChatSession:
 
 
 def build_assistant(
-    factories: Factories, session: ChatSession, *, provider: str, model: str, options: BuildOptions
+    factories: Factories,
+    session: ChatSession,
+    *,
+    provider: str,
+    model: str,
+    options: BuildOptions,
+    notify: Callable[[Notice], None] | None = None,
 ) -> AssistantBuild:
     """Create the LLM backend, tools and assistant, verifying the LLM connection.
 
@@ -157,6 +163,8 @@ def build_assistant(
         provider: ``claude`` or ``ollama``.
         model: Model id (empty = provider default).
         options: Thinking and ``run_sql`` choices.
+        notify: Optional callback receiving each notice as soon as it is created (so the "verifying" line can be
+            shown before the possibly slow connection check); the notices are returned as well.
 
     Returns:
         AssistantBuild: The assistant (``None`` on failure) and the notices to show, in order.
@@ -164,20 +172,29 @@ def build_assistant(
     from llmopenfinance.agent import FinanceAssistant
     from llmopenfinance.tools import ToolRegistry
 
+    notices: list[Notice] = []
+
+    def emit(level: str, text: str) -> None:
+        notice = Notice(level, text)
+        notices.append(notice)
+        if notify is not None:
+            notify(notice)
+
     try:
         llm = factories.llm(provider, model, think=options.think)
     except ValueError as exc:
-        return AssistantBuild(assistant=None, notices=(Notice("error", str(exc)),))
-    notices = [Notice("info", t("cli.llm.verifying", provider=llm.provider, model=llm.model))]
+        emit("error", str(exc))
+        return AssistantBuild(assistant=None, notices=tuple(notices))
+    emit("info", t("cli.llm.verifying", provider=llm.provider, model=llm.model))
     if not llm._verify_connection():
-        notices.append(Notice("error", t("cli.llm.unreachable", provider=llm.provider, model=llm.model)))
+        emit("error", t("cli.llm.unreachable", provider=llm.provider, model=llm.model))
         if llm.provider == "ollama":
-            notices.append(Notice("info", t("cli.llm.ollama_hint", model=llm.model)))
+            emit("info", t("cli.llm.ollama_hint", model=llm.model))
         else:
-            notices.append(Notice("info", t("cli.llm.claude_hint")))
+            emit("info", t("cli.llm.claude_hint"))
         return AssistantBuild(assistant=None, notices=tuple(notices))
     if llm.provider == "claude":
-        notices.append(Notice("dim", t("cli.llm.privacy")))
+        emit("dim", t("cli.llm.privacy"))
     sql = options.enable_sql if options.enable_sql is not None else llm.provider == "claude"
     registry = ToolRegistry(session.connection, enable_sql=sql)
     return AssistantBuild(assistant=FinanceAssistant(llm, registry, session.snapshot), notices=tuple(notices))

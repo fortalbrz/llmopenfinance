@@ -221,6 +221,62 @@ def test_build_assistant_unknown_provider(session: ChatSession, db_path: Path):
     )
 
 
+class RecordingLLM(FakeLLM):
+    """Records the notices already delivered when the (possibly slow) connection check starts."""
+
+    def __init__(self, delivered: list[Notice], **kwargs: Any) -> None:
+        super().__init__([], **kwargs)
+        self.delivered = delivered
+        self.seen_at_check: list[Notice] | None = None
+
+    def _verify_connection(self) -> bool:
+        self.seen_at_check = list(self.delivered)
+        return super()._verify_connection()
+
+
+@pytest.mark.parametrize(
+    ("provider", "reachable", "levels"),
+    [
+        ("ollama", False, ["info", "error", "info"]),
+        ("claude", False, ["info", "error", "info"]),
+        ("claude", True, ["info", "dim"]),
+        ("ollama", True, ["info"]),
+    ],
+)
+def test_build_assistant_notifies_verifying_before_the_check(
+    session: ChatSession, db_path: Path, provider: str, reachable: bool, levels: list[str]
+):
+    delivered: list[Notice] = []
+    llm = RecordingLLM(delivered, provider=provider, reachable=reachable)
+    build = build_assistant(
+        make_factories(db_path, llm=llm),
+        session,
+        provider=provider,
+        model="",
+        options=BuildOptions(think=False, enable_sql=None),
+        notify=delivered.append,
+    )
+    assert llm.seen_at_check == [Notice("info", t("cli.llm.verifying", provider=provider, model="fake-model"))]
+    assert tuple(delivered) == build.notices  # every notice streamed exactly once, in the returned order
+    assert [notice.level for notice in delivered] == levels
+    assert (build.assistant is not None) is reachable
+
+
+def test_build_assistant_notifies_factory_error(session: ChatSession, db_path: Path):
+    delivered: list[Notice] = []
+    factories = Factories(llm=get_llm, open_store=store_opener(db_path), pluggy_client=FakePluggy)
+    build = build_assistant(
+        factories,
+        session,
+        provider="nope",
+        model="",
+        options=BuildOptions(think=False, enable_sql=None),
+        notify=delivered.append,
+    )
+    assert build.assistant is None
+    assert tuple(delivered) == build.notices == (Notice("error", t("llm.error.unknown_provider", provider="nope")),)
+
+
 # ---------------------------------------------------------------------------
 # run_command
 # ---------------------------------------------------------------------------

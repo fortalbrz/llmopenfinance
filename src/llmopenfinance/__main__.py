@@ -268,8 +268,8 @@ def _build_assistant(session: ChatSession, *, think: bool, enable_sql: bool | No
         provider=_state.provider,
         model=_state.model,
         options=BuildOptions(think=think, enable_sql=enable_sql),
+        notify=_render_notice,  # each line as it happens, so "verifying" shows before the slow check
     )
-    _render_notices(build.notices)
     return build.assistant
 
 
