@@ -259,6 +259,20 @@ Open Finance (Pluggy) into a local database. Rules:
     "web.ui.status_language": "Language",
     "web.ui.status_last_sync": "Last sync",
     "web.ui.status_never": "never",
+    "web.ui.status_data": "Data",
+    "web.ui.message_label": "Message",
+    "web.ui.messages_label": "Conversation",
+    "web.ui.commands_label": "Commands",
+    "web.ui.empty": "Ask about your accounts, spending or investments, or use the buttons above.",
+    "web.ui.hint": "Enter sends · Shift+Enter adds a line",
+    "web.ui.you": "You",
+    "web.ui.assistant": "Assistant",
+    "web.ui.tool_prefix": "↳ querying",
+    "web.ui.error_prefix": "[error]",
+    "web.ui.network_error": "Could not reach the server; please try again.",
+    "web.ui.sync_unchanged": "no changes since the last sync",
+    "web.ui.conversation_reset": "Data updated; conversation reset.",
+    "web.ui.conversation_reset_failed": "Sync failed; using the local data (conversation reset).",
     "cli.epilog": (
         "Environment variables:\n"
         "{provider:<25}default AI provider: claude | ollama\n"

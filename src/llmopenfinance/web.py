@@ -9,7 +9,9 @@ The app serves the user's financial data over plain HTTP, so every request passe
 3. ``POST`` bodies must be ``application/json`` (415) and at most 64 KiB (413).
 
 Every error is a JSON ``{"error": <localised text>}`` and every response carries ``Cache-Control: no-store``. The
-token and the request data are never logged.
+token and the request data are never logged. ``GET /`` serves the chat page (:mod:`llmopenfinance.web_page`) with a
+fresh nonce and a ``Content-Security-Policy`` that allows only its nonce'd inline style and script and ``fetch`` to
+this origin; every other response gets a CSP that allows nothing at all.
 
 One assistant and one read-only store serve every request thread, so all use of the session, the assistant and
 DuckDB happens while holding :attr:`WebContext.lock`; a request that finds it held gets 409 instead of queueing.
@@ -25,7 +27,6 @@ lock until the sync has finished and the read-only store has been reopened (:fun
 
 from __future__ import annotations
 
-import html
 import logging
 import queue
 import secrets
@@ -45,6 +46,7 @@ from llmopenfinance.agent import AssistantError, ToolStatus
 from llmopenfinance.chat import TextDelta
 from llmopenfinance.i18n import get_language, t
 from llmopenfinance.session import BuildOptions, ChatSession, Factories, Notice, parse_command, run_command, run_sync
+from llmopenfinance.web_page import render_page
 from llmopenfinance.web_stream import StreamEvent, json_error, release_pending, stream_under_lock
 
 if TYPE_CHECKING:
@@ -62,6 +64,8 @@ _DEFAULT_HTTP_PORT = 80
 # Commands served by POST /api/command; ``sync`` streams through its own route and ``exit`` means nothing here.
 _WEB_COMMANDS = frozenset({"help", "summary", "reset", "history"})
 _SYNC_THREAD_NAME = "finassist-web-sync"
+# Every response that is not the page: nothing may load, run or frame it.
+_API_CSP = "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 
 def new_token() -> str:
@@ -153,6 +157,21 @@ class WebContext:
         """Re-read ``last_sync`` and the row counts from the store. Call only at startup or while holding the lock."""
         store = self.session.store
         self.status = {"last_sync": store.get_meta("last_sync"), "counts": store.counts()}
+
+
+def _page_csp(nonce: str) -> str:
+    """Build the page's ``Content-Security-Policy``: only its nonce'd inline style and script, ``fetch`` to itself.
+
+    Args:
+        nonce: The request's nonce (also on the page's ``<style>`` and ``<script>`` elements).
+
+    Returns:
+        str: The header value (no ``unsafe-inline`` or ``unsafe-eval``).
+    """
+    return (
+        f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
 
 
 def _token_matches(candidate: str, token: str) -> bool:
@@ -453,6 +472,7 @@ def create_app(ctx: WebContext) -> Flask:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers.setdefault("Content-Security-Policy", _API_CSP)  # the page sets its own, nonce'd one
         return response
 
     @app.errorhandler(HTTPException)
@@ -471,10 +491,11 @@ def create_app(ctx: WebContext) -> Flask:
 
     @app.get("/")
     def index() -> Response:
-        # Placeholder until the chat page exists.
-        title = html.escape(t("web.ui.title"))
-        page = f'<!doctype html><html lang="{get_language()}"><title>{title}</title><h1>{title}</h1></html>'
-        return Response(page, mimetype="text/html")
+        nonce = secrets.token_urlsafe(18)
+        page = render_page(language=get_language(), strings=ui_strings(), nonce=nonce)
+        response = Response(page, mimetype="text/html")
+        response.headers["Content-Security-Policy"] = _page_csp(nonce)
+        return response
 
     @app.get("/api/state")
     def state() -> Response:

@@ -263,6 +263,20 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "web.ui.status_language": "Idioma",
     "web.ui.status_last_sync": "Última sincronização",
     "web.ui.status_never": "nunca",
+    "web.ui.status_data": "Dados",
+    "web.ui.message_label": "Mensagem",
+    "web.ui.messages_label": "Conversa",
+    "web.ui.commands_label": "Comandos",
+    "web.ui.empty": "Pergunte algo sobre suas contas, gastos ou investimentos, ou use os botões acima.",
+    "web.ui.hint": "Enter envia · Shift+Enter quebra a linha",
+    "web.ui.you": "Você",
+    "web.ui.assistant": "Assistente",
+    "web.ui.tool_prefix": "↳ consultando",
+    "web.ui.error_prefix": "[erro]",
+    "web.ui.network_error": "Falha de comunicação com o servidor; tente novamente.",
+    "web.ui.sync_unchanged": "sem alterações desde a última sincronização",
+    "web.ui.conversation_reset": "Dados atualizados; conversa reiniciada.",
+    "web.ui.conversation_reset_failed": "Sincronização falhou; usando os dados locais (conversa reiniciada).",
     "cli.epilog": (
         "Variáveis de ambiente:\n"
         "{provider:<25}provedor de IA padrão: claude | ollama\n"

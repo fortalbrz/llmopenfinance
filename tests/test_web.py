@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import replace
@@ -25,6 +26,7 @@ from llmopenfinance.store import FinanceStore
 from llmopenfinance.sync import ItemResult
 from llmopenfinance.tools import ToolCall, ToolRegistry
 from llmopenfinance.web import COOKIE_NAME, WebContext, create_app, host_allowed, new_token
+from llmopenfinance.web_page import render_page
 from tests.conftest import BANK_ID, ITEM_ID, FakePluggy
 from tests.test_agent import ScriptedChat, answer, tool_turn
 from tests.test_session import make_factories, store_opener
@@ -1230,6 +1232,177 @@ def test_sync_requires_auth_and_json(ctx: WebContext, monkeypatch: pytest.Monkey
     assert fake.forces == []
     assert ctx.session.store is before
     assert not ctx.lock.locked()
+
+
+# ---------------------------------------------------------------------------
+# Page
+# ---------------------------------------------------------------------------
+
+NONCE_ATTR = re.compile(r'\snonce="([^"]*)"')
+STRINGS_BLOCK = re.compile(r'<script type="application/json" id="i18n" nonce="[^"]*">(.*?)</script>', re.S)
+EXTERNAL_REFERENCE = re.compile(
+    r"""(?:\b(?:src|href)\s*=\s*["']?|url\(\s*["']?|@import\s+(?:url\(\s*)?["']?)\s*(?:https?:)?//""", re.I
+)
+INLINE_HANDLER = re.compile(r"<[^>]*\son[a-z]+\s*=", re.I)
+SCRIPT_OR_STYLE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.S | re.I)
+PAGE_DIRECTIVES = {
+    "default-src",
+    "script-src",
+    "style-src",
+    "connect-src",
+    "base-uri",
+    "form-action",
+    "frame-ancestors",
+}
+
+
+def page_response(client: FlaskClient) -> Any:
+    response = get(client, "/")
+    assert response.status_code == 200
+    assert response.mimetype == "text/html"
+    return response
+
+
+def csp_directives(response: Any) -> dict[str, str]:
+    directives: dict[str, str] = {}
+    for part in response.headers["Content-Security-Policy"].split(";"):
+        name, _, value = part.strip().partition(" ")
+        directives[name] = value.strip()
+    return directives
+
+
+def page_nonce(response: Any) -> str:
+    source = csp_directives(response)["script-src"]
+    assert source.startswith("'nonce-")
+    assert source.endswith("'")
+    return source.removeprefix("'nonce-").removesuffix("'")
+
+
+def main_script(body: str) -> str:
+    match = re.search(r'<script nonce="[^"]*">(.*?)</script>', body, re.S)
+    assert match is not None
+    return match.group(1)
+
+
+def test_page_language_and_strings(ctx: WebContext, use_language: UseLanguage):
+    client = client_for(ctx)
+    body = page_response(client).get_data(as_text=True)
+    assert '<html lang="pt-BR">' in body
+    assert ">Enviar</button>" in body
+    use_language("en")
+    body = page_response(client).get_data(as_text=True)
+    assert '<html lang="en">' in body
+    assert ">Send</button>" in body
+    assert "Enviar" not in body
+    block = STRINGS_BLOCK.search(body)
+    assert block is not None
+    assert json.loads(block.group(1)) == web.ui_strings()
+
+
+def test_page_has_no_external_resources(ctx: WebContext):
+    body = page_response(client_for(ctx)).get_data(as_text=True)
+    assert not EXTERNAL_REFERENCE.search(body)
+    for needle in ("http://", "https://", "@import", "url("):
+        assert needle not in body
+    assert not re.search(r"<(?:link|iframe|img|object|embed|base)\b", body, re.I)
+    assert not re.search(r"<script\b[^>]*\bsrc\s*=", body, re.I)
+
+
+def test_page_csp_header(ctx: WebContext):
+    response = page_response(client_for(ctx))
+    header = response.headers["Content-Security-Policy"]
+    assert "unsafe-inline" not in header
+    assert "unsafe-eval" not in header
+    nonce = page_nonce(response)
+    assert len(nonce) >= 16
+    assert csp_directives(response) == {
+        "default-src": "'none'",
+        "script-src": f"'nonce-{nonce}'",
+        "style-src": f"'nonce-{nonce}'",
+        "connect-src": "'self'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-ancestors": "'none'",
+    }
+    body = response.get_data(as_text=True)
+    assert f'<style nonce="{nonce}">' in body
+    assert f'<script nonce="{nonce}">' in body
+    assert set(NONCE_ATTR.findall(body)) == {nonce}
+    assert body.count("<style") == 1
+    assert body.count("<script") == body.count(f'nonce="{nonce}">') - 1  # every script carries it (+ the style)
+
+
+def test_page_requires_auth(ctx: WebContext):
+    response = get(client_for(ctx, authenticated=False), "/")
+    assert response.status_code == 401
+    assert response.get_json() == {"error": t("web.unauthorized")}
+    assert "nonce-" not in response.headers.get("Content-Security-Policy", "")
+    assert "<html" not in response.get_data(as_text=True)
+
+
+def test_nonce_differs_per_request(ctx: WebContext):
+    client = client_for(ctx)
+    first, second = page_response(client), page_response(client)
+    assert page_nonce(first) != page_nonce(second)
+    assert set(NONCE_ATTR.findall(second.get_data(as_text=True))) == {page_nonce(second)}
+
+
+def test_hostile_strings_cannot_break_out():
+    hostile = "</script><img src=x onerror=1>\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}&amp;'\""
+    strings = {**web.ui_strings(), "web.ui.send": hostile, "web.ui.title": hostile, "web.ui.busy": "</SCRIPT >"}
+    body = render_page(language='en"><script>alert(1)</script>', strings=strings, nonce='n"><b>')
+    assert "<img" not in body
+    assert "<b>" not in body
+    assert '<html lang="en&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;">' in body
+    assert body.lower().count("</script") == body.lower().count("<script")  # every closing tag closes one of ours
+    block = STRINGS_BLOCK.search(body)
+    assert block is not None
+    raw = block.group(1)
+    for char in ("<", ">", "&", "\N{LINE SEPARATOR}", "\N{PARAGRAPH SEPARATOR}"):
+        assert char not in raw
+    assert json.loads(raw) == strings
+    assert "&lt;/script&gt;&lt;img src=x onerror=1&gt;" in body  # the visible label is escaped text
+
+
+def test_page_has_no_inline_event_handlers(ctx: WebContext):
+    body = page_response(client_for(ctx)).get_data(as_text=True)
+    markup = SCRIPT_OR_STYLE.sub("", body)
+    assert "<button" in markup  # not vacuous: the markup is still there
+    assert not INLINE_HANDLER.search(markup)
+    assert not re.search(r"\sstyle\s*=", markup, re.I)  # the CSP blocks inline style attributes too
+    assert "javascript:" not in body.lower()
+
+
+def test_page_script_has_a_single_html_sink():
+    script = main_script(render_page(language="pt-BR", strings=web.ui_strings(), nonce="n"))
+    assert script.count("innerHTML") == 1
+    (sink,) = [line for line in script.splitlines() if "innerHTML" in line]
+    assert "= renderMarkdown(" in sink
+    for banned in (
+        "eval(",
+        "Function(",
+        "document.write",
+        "insertAdjacentHTML",
+        "outerHTML",
+        ".onclick",
+        'setTimeout("',
+    ):
+        assert banned not in script
+
+
+def test_page_catalog_keys_exist():
+    body = render_page(language="pt-BR", strings={}, nonce="n")
+    keys = set(re.findall(r"web\.ui\.[a-z_]+", body))
+    assert len(keys) > 10
+    assert sorted(key for key in keys if key not in web.ui_strings()) == []
+
+
+def test_api_responses_carry_a_strict_csp(ctx: WebContext):
+    for response in (get(client_for(ctx), "/api/state"), get(client_for(ctx, authenticated=False), "/api/state")):
+        directives = csp_directives(response)
+        assert directives["default-src"] == "'none'"
+        assert directives["frame-ancestors"] == "'none'"
+        assert "script-src" not in directives
 
 
 # ---------------------------------------------------------------------------
