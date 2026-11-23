@@ -154,6 +154,17 @@ Open Finance (Pluggy) into a local database. Rules:
     "cli.chat.sync": "Sync before chatting",
     "cli.chat.think": "Enable reasoning (thinking) on Ollama",
     "cli.chat.sql": "Allow the run_sql tool (default: Claude only)",
+    "cli.server.help": (
+        "Serves the finance chat as a local web page, protected by a token that changes on every run "
+        "(default: reachable only from this computer)."
+    ),
+    "cli.server.host": "Address to listen on (off loopback the data travels over plain HTTP)",
+    "cli.server.port": "TCP port",
+    "cli.server.threads": "Worker threads (at least 2, so the state answers during a reply)",
+    "cli.server.browser": "Open the page in the browser",
+    "cli.server.sync": "Sync before serving",
+    "cli.server.think": "Enable reasoning (thinking) on Ollama",
+    "cli.server.sql": "Allow the run_sql tool (default: Claude only)",
     "cli.ask.help": "Ask a single question and exit.",
     "cli.ask.question": "Question",
     "cli.ask.sync": "Sync first",
@@ -205,6 +216,18 @@ Open Finance (Pluggy) into a local database. Rules:
     "cli.connect.received": "Connection received: {item_id} — waiting for Pluggy to sync…",
     "cli.connect.opening": "Opening Pluggy Connect in the browser… complete the connection and close the widget.",
     "cli.connect.browser_hint": "If the browser does not open, go to: {url}",
+    "cli.server.missing_extra": (
+        "The web interface needs the 'web' extra (Flask and Waitress). Install it with: uv sync --extra web"
+    ),
+    "cli.server.context_failed": "Could not start the web server: {error}",
+    "cli.server.url": "Open in your browser: {url}  (Ctrl+C stops the server)",
+    "cli.server.warn_plain_http": (
+        "WARNING: your financial data is served over plain HTTP (unencrypted) on {host}; use only on trusted networks."
+    ),
+    "cli.server.warn_wildcard": (
+        "Because {host} accepts connections from any address, the token in the link alone protects access."
+    ),
+    "cli.server.bind_failed": "Could not listen on {host}:{port}: {error}",
     "chat.assistant_label": "Assistant",
     "chat.tool_status": "↳ querying {name}({args})",
     "chat.error": "[error] {message}",

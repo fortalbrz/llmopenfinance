@@ -1450,3 +1450,68 @@ def test_logs_do_not_contain_message_text(db_path: Path, caplog: pytest.LogCaptu
         for record in caplog.records:
             assert secret not in record.getMessage()
             assert secret not in str(record.args)
+
+
+def test_serve_passes_waitress_limits(db_path: Path):
+    context = make_ctx(db_path, host="127.0.0.1")
+    seen: list[tuple[Any, dict[str, Any]]] = []
+    try:
+        web.serve(context, threads=3, serve_fn=lambda app, **kwargs: seen.append((app, kwargs)))
+    finally:
+        context.session.close()
+    assert len(seen) == 1
+    app, kwargs = seen[0]
+    assert app.name == "llmopenfinance.web"
+    assert kwargs["host"] == "127.0.0.1"
+    assert kwargs["port"] == 8000
+    assert kwargs["threads"] == 3
+    # Waitress buffers a whole body before the app can answer 413: keep the limit just above the app's own.
+    assert web.MAX_CONTENT_LENGTH < kwargs["max_request_body_size"] <= 2 * web.MAX_CONTENT_LENGTH
+    assert set(kwargs) == {"host", "port", "threads", "max_request_body_size"}  # no proxy trust, no access logger
+
+
+def test_serve_defaults_to_waitress(db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import socket
+
+    import waitress
+
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(waitress, "serve", lambda _app, **kwargs: seen.append(kwargs))
+    context = make_ctx(db_path)
+    with socket.socket() as probe:  # a free port: serve() checks that it can bind before it calls Waitress
+        probe.bind(("127.0.0.1", 0))
+        context.port = probe.getsockname()[1]
+    try:
+        web.serve(context)
+    finally:
+        context.session.close()
+    assert seen[0]["threads"] == 4
+
+
+def test_serve_refuses_a_port_that_is_in_use(db_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import socket
+
+    import waitress
+
+    started: list[object] = []
+    monkeypatch.setattr(waitress, "serve", lambda *_a, **_k: started.append(1))
+    context = make_ctx(db_path)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        context.port = listener.getsockname()[1]
+        try:
+            with pytest.raises(OSError):
+                web.serve(context)
+        finally:
+            context.session.close()
+    assert started == []
+
+
+def test_serve_refuses_an_unresolvable_host(db_path: Path):
+    context = make_ctx(db_path, host="no-such-host.invalid")
+    try:
+        with pytest.raises(OSError):
+            web.serve(context)
+    finally:
+        context.session.close()

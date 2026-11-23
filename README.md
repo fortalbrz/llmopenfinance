@@ -55,6 +55,7 @@ uv run finassist --provider ollama         # 100% local (qwen3.5:9b)
 | Command | What it does |
 |---|---|
 | `finassist` / `finassist chat` | Interactive chat. Syncs first; skip with `--no-sync` |
+| `finassist server [--host H] [--port N]` | Serves the same chat as a local web page (needs `uv sync --extra web`) |
 | `finassist ask "pergunta"` | Asks one question and exits |
 | `finassist sync [--force]` | Downloads accounts, transactions, card bills, investments and loans |
 | `finassist status` | Shows connections, consent expiry dates and local row counts |
@@ -79,6 +80,32 @@ uv run finassist
 - An unsupported value stops the program with a short message on stderr and exit status 2.
 - Stored data such as category labels (`Alimentação`) is never translated, and the chat commands of both languages
   (`/ajuda` and `/help`, `/resumo` and `/summary`, `sair` and `exit`) work in either.
+
+## Web chat
+
+`finassist server` serves the same assistant as a chat page in your browser, with buttons for `/help`, `/summary`,
+`/sync`, `/reset` and `/history` and a language that follows `LLMOPENFINANCE_LANG`. It needs the optional `web` extra
+(Flask and Waitress):
+
+```powershell
+uv sync --extra web
+uv run finassist server                    # syncs, prints a URL with a token and opens the browser
+uv run finassist server --no-browser --no-sync --port 8123
+```
+
+Options: `--host` (default `127.0.0.1`), `--port` (`8000`), `--threads` (`4`, at least 2), `--browser/--no-browser`,
+`--sync/--no-sync`, `--think` and `--sql/--no-sql` (the last three work as in `chat`). Without the extra the command
+prints the install line and exits with status 1.
+
+Security, in short (details in [docs/usage.md](docs/usage.md#server)):
+
+- It listens on the loopback address only, unless you pass another `--host`; the page then travels over **plain HTTP**
+  and `server` prints a warning. With a wildcard host (`0.0.0.0`, `::`) the token alone protects access.
+- Every launch creates a new secret token. The URL with the token (`http://127.0.0.1:8000/?token=...`) is printed once
+  and never logged; the browser keeps it in an `HttpOnly` cookie and the address bar drops it.
+- Requests whose `Host` header is not this server are refused (DNS-rebinding defence).
+- One server process holds one conversation, shared by every tab. A request that arrives while the assistant is busy is
+  refused with "busy"; requests are not queued.
 
 ## How it works
 

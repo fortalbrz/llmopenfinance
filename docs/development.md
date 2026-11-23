@@ -46,6 +46,29 @@ installments). They don't count toward item limits and are deleted after 30 days
 4. Keep tool lists and descriptions static. Claude's prompt cache depends on a stable prefix.
 
 
+## Web page smoke test (synthetic data)
+
+A manual check of the whole web chat, with the synthetic dataset and the `web` extra installed (`uv sync --extra web`):
+
+```powershell
+uv run python -c "from tests.conftest import populate; from llmopenfinance.store import FinanceStore; s = FinanceStore('smoke.duckdb'); populate(s); s.close()"
+uv run finassist --db smoke.duckdb server --no-sync          # add --provider ollama to stay local
+```
+
+The command prints `http://127.0.0.1:8000/?token=...` and opens it. Then check:
+
+1. The page loads, the address bar shows `/` without the token, and the status line names the provider, model, language, last sync and data counts.
+2. Type *Quais assinaturas eu tenho?*: the answer streams in, with a `consultando ...` row for each tool call.
+3. Click **Help**, **Summary**, **History** and **Reset conversation**: each shows its text, and Reset empties the conversation.
+4. Reload the tab: the text turns reappear. Open a second tab on the printed URL: it shows the same conversation.
+5. While an answer is streaming, send another message from the second tab: it is refused as busy, and the status line still updates.
+6. Open `http://127.0.0.1:8000/` in a private window (no cookie): the reply is a JSON "access denied", not the page. `curl -H "Host: evil.example" http://127.0.0.1:8000/` gets 400.
+7. Press Ctrl+C in the terminal: the server stops with a goodbye line. Start a second server on the same port while the first runs: one error line naming host and port, exit status 1.
+8. `LLMOPENFINANCE_LANG=en` shows the page and the messages in English. `--host 0.0.0.0` prints the plain-HTTP warning.
+
+Delete `smoke.duckdb` afterwards.
+
+
 ## Web server notes
 
 The `web` extra (`uv sync --extra web`, or `pip install "llmopenfinance[web]"`) installs Flask 3.1.3 and

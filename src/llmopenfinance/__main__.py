@@ -4,7 +4,7 @@
 Console chat with an LLM financial assistant (Claude or Ollama) over the user's Open Finance
 data (Pluggy), cached in a local DuckDB database.
 
-Commands: ``chat`` (default), ``ask``, ``sync``, ``status``, ``connect``, ``items add|list|remove``.
+Commands: ``chat`` (default), ``server``, ``ask``, ``sync``, ``status``, ``connect``, ``items add|list|remove``.
 Structure follows ``apexmusic.__main__``: a global ``_state`` filled by the Typer callback,
 ``_handle_*`` functions holding the logic (return exit codes) and thin ``@app.command`` wrappers. The chat/sync
 core shared with other front ends lives in :mod:`llmopenfinance.session`; this module renders its notices.
@@ -15,13 +15,17 @@ Every user-visible text comes from the message catalog (``t("cli.*")`` / ``t("ch
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import logging
 import os
 import sys
 import warnings
+import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Annotated, Any
 
 import typer
@@ -30,6 +34,9 @@ from llmopenfinance import __version__, ui
 from llmopenfinance.constants import (
     DEFAULT_DB_PATH,
     DEFAULT_PROVIDER,
+    DEFAULT_WEB_HOST,
+    DEFAULT_WEB_PORT,
+    DEFAULT_WEB_THREADS,
     ENV_DB_PATH,
     ENV_LANG,
     ENV_PLUGGY_CLIENT_ID,
@@ -91,6 +98,11 @@ class _State:
 
 
 _state = _State()
+
+# Seam for tests: the browser is never opened from them.
+_open_browser = webbrowser.open
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 
 app = typer.Typer(
     name="finassist",
@@ -392,6 +404,159 @@ def _handle_chat(*, sync: bool = True, think: bool = False, enable_sql: bool | N
         session.close()
 
 
+@dataclass(frozen=True)
+class ServerOptions:
+    """Options of the ``server`` command.
+
+    Attributes:
+        host: Address to listen on.
+        port: TCP port.
+        threads: Waitress worker threads.
+        open_browser: Open the page in the browser once the server is ready.
+        sync: Synchronize Pluggy data before serving.
+        think: Enable Ollama thinking.
+        enable_sql: Expose ``run_sql`` (``None`` = provider default).
+    """
+
+    host: str
+    port: int
+    threads: int
+    open_browser: bool
+    sync: bool
+    think: bool
+    enable_sql: bool | None
+
+
+def _load_web() -> ModuleType | None:
+    """Import the web module, which needs the optional ``web`` extra (Flask, Waitress).
+
+    Returns:
+        ModuleType | None: ``llmopenfinance.web``, or ``None`` after printing the install hint when it is missing.
+    """
+    try:
+        return importlib.import_module("llmopenfinance.web")
+    except ImportError:
+        ui.show_notice(Notice("error", t("cli.server.missing_extra")))
+        return None
+
+
+def _server_url(host: str, port: int, token: str) -> str:
+    """Build the URL the browser opens: wildcard hosts are reached through the loopback name, IPv6 in brackets.
+
+    Args:
+        host: The ``--host`` value.
+        port: The port.
+        token: The per-launch token.
+
+    Returns:
+        str: ``http://<host>:<port>/?token=<token>``.
+    """
+    shown = "127.0.0.1" if host in _WILDCARD_HOSTS else f"[{host}]" if ":" in host else host
+    return f"http://{shown}:{port}/?token={token}"
+
+
+def _announce_server(host: str, url: str) -> None:
+    """Print the URL (the only place the token is shown) and, off loopback, the plain-HTTP warning.
+
+    Args:
+        host: The ``--host`` value.
+        url: The tokened URL.
+    """
+    ui.show_notice(Notice("ok", t("cli.server.url", url=url)))
+    if host.lower() in _LOOPBACK_HOSTS:
+        return
+    ui.show_notice(Notice("warn", t("cli.server.warn_plain_http", host=host)))
+    if host in _WILDCARD_HOSTS:
+        ui.show_notice(Notice("warn", t("cli.server.warn_wildcard", host=host)))
+
+
+def _web_context(web: ModuleType, session: ChatSession, assistant: Any, options: ServerOptions) -> Any:
+    """Build the web context, which also reads the store for its status line.
+
+    Args:
+        web: The imported ``llmopenfinance.web``.
+        session: Chat session (read-only store).
+        assistant: Active ``FinanceAssistant``.
+        options: The ``server`` options.
+
+    Returns:
+        Any: The ``WebContext``, or ``None`` after printing one error line when it could not be built.
+    """
+    try:
+        return web.WebContext(
+            session=session,
+            assistant=assistant,
+            factories=_factories(),
+            token=web.new_token(),
+            host=options.host,
+            port=options.port,
+            options=BuildOptions(think=options.think, enable_sql=options.enable_sql),
+            provider=assistant.chat.provider,
+            model=assistant.chat.model,
+        )
+    except Exception as exc:
+        logger.exception("Could not build the web context")
+        ui.show_notice(Notice("error", t("cli.server.context_failed", error=exc)))
+        return None
+
+
+def _serve(web: ModuleType, ctx: Any, options: ServerOptions) -> int:
+    """Serve until interrupted; a port that cannot be bound is one error line, not a traceback.
+
+    Args:
+        web: The imported ``llmopenfinance.web``.
+        ctx: The ``WebContext``.
+        options: The ``server`` options.
+
+    Returns:
+        int: ``0`` after Ctrl+C, ``1`` when the address cannot be bound.
+    """
+    try:
+        web.serve(ctx, threads=options.threads)
+    except KeyboardInterrupt:
+        pass  # Waitress may also swallow Ctrl+C and return; both end here
+    except OSError as exc:
+        ui.show_notice(Notice("error", t("cli.server.bind_failed", host=options.host, port=options.port, error=exc)))
+        return 1
+    ui.show_notice(Notice("info", "\n" + t("chat.goodbye")))
+    return 0
+
+
+def _handle_server(options: ServerOptions) -> int:
+    """Serve the chat as a local web page.
+
+    Fails fast, cheapest check first: the ``web`` extra, then the optional sync, the LLM connection and the store.
+
+    Args:
+        options: The ``server`` options.
+
+    Returns:
+        int: Exit code.
+    """
+    web = _load_web()
+    if web is None:
+        return 1
+    _maybe_sync(sync=options.sync)
+    session = _ChatSession(_open_store)
+    try:
+        assistant = _build_assistant(session, think=options.think, enable_sql=options.enable_sql)
+        if assistant is None:
+            return 1
+        if session.store.counts()["transactions"] == 0:
+            ui.show_notice(Notice("warn", t("chat.no_transactions")))
+        ctx = _web_context(web, session, assistant, options)
+        if ctx is None:
+            return 1
+        url = _server_url(options.host, options.port, ctx.token)  # printed once, never logged
+        _announce_server(options.host, url)
+        if options.open_browser:
+            with contextlib.suppress(Exception):  # a missing browser must not stop the server
+                _open_browser(url)
+        return _serve(web, ctx, options)
+    finally:
+        session.close()
+
+
 def _handle_ask(question: str, *, sync: bool = False, enable_sql: bool | None = None) -> int:
     """Answer one question non-interactively.
 
@@ -599,6 +764,23 @@ def chat(
 ) -> None:
     """Run the interactive chat (default command)."""
     raise typer.Exit(code=_handle_chat(sync=sync, think=think, enable_sql=sql))
+
+
+@app.command(help=t("cli.server.help"), rich_help_panel=t("cli.panel.chat"))
+def server(
+    host: Annotated[str, typer.Option("--host", help=t("cli.server.host"))] = DEFAULT_WEB_HOST,
+    port: Annotated[int, typer.Option("--port", min=1, max=65535, help=t("cli.server.port"))] = DEFAULT_WEB_PORT,
+    threads: Annotated[int, typer.Option("--threads", min=2, help=t("cli.server.threads"))] = DEFAULT_WEB_THREADS,
+    browser: Annotated[bool, typer.Option("--browser/--no-browser", help=t("cli.server.browser"))] = True,
+    sync: Annotated[bool, typer.Option("--sync/--no-sync", help=t("cli.server.sync"))] = True,
+    think: Annotated[bool, typer.Option("--think", help=t("cli.server.think"))] = False,
+    sql: Annotated[bool | None, typer.Option("--sql/--no-sql", help=t("cli.server.sql"))] = None,
+) -> None:
+    """Serve the chat as a local web page."""
+    options = ServerOptions(
+        host=host, port=port, threads=threads, open_browser=browser, sync=sync, think=think, enable_sql=sql
+    )
+    raise typer.Exit(code=_handle_server(options))
 
 
 @app.command(help=t("cli.ask.help"), rich_help_panel=t("cli.panel.chat"))

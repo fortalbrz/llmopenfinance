@@ -158,6 +158,17 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "cli.chat.sync": "Sincronizar antes de conversar",
     "cli.chat.think": "Ativa o raciocínio (thinking) no Ollama",
     "cli.chat.sql": "Permite a ferramenta run_sql (padrão: só no Claude)",
+    "cli.server.help": (
+        "Serve o chat financeiro como uma página web local, protegida por um token que muda a cada execução "
+        "(padrão: acessível só neste computador)."
+    ),
+    "cli.server.host": "Endereço de escuta (fora do loopback, os dados trafegam por HTTP puro)",
+    "cli.server.port": "Porta TCP",
+    "cli.server.threads": "Threads de atendimento (mínimo 2, para o estado responder durante uma resposta)",
+    "cli.server.browser": "Abrir a página no navegador",
+    "cli.server.sync": "Sincronizar antes de servir",
+    "cli.server.think": "Ativa o raciocínio (thinking) no Ollama",
+    "cli.server.sql": "Permite a ferramenta run_sql (padrão: só no Claude)",
     "cli.ask.help": "Faz uma pergunta única e sai.",
     "cli.ask.question": "Pergunta",
     "cli.ask.sync": "Sincronizar antes",
@@ -209,6 +220,19 @@ sincronizados via Open Finance (Pluggy) em um banco local. Regras:
     "cli.connect.received": "Conexão recebida: {item_id} — aguardando a sincronização da Pluggy…",
     "cli.connect.opening": "Abrindo o Pluggy Connect no navegador… conclua a conexão e feche o widget.",
     "cli.connect.browser_hint": "Se o navegador não abrir, acesse: {url}",
+    "cli.server.missing_extra": (
+        "A interface web precisa do extra 'web' (Flask e Waitress). Instale com: uv sync --extra web"
+    ),
+    "cli.server.context_failed": "Não foi possível iniciar o servidor web: {error}",
+    "cli.server.url": "Abra no navegador: {url}  (Ctrl+C encerra o servidor)",
+    "cli.server.warn_plain_http": (
+        "ATENÇÃO: seus dados financeiros são servidos por HTTP puro (sem criptografia) em {host}; "
+        "use somente em redes confiáveis."
+    ),
+    "cli.server.warn_wildcard": (
+        "Como {host} aceita conexões de qualquer endereço, somente o token do link protege o acesso."
+    ),
+    "cli.server.bind_failed": "Não foi possível escutar em {host}:{port}: {error}",
     "chat.assistant_label": "Assistente",
     "chat.tool_status": "↳ consultando {name}({args})",
     "chat.error": "[erro] {message}",

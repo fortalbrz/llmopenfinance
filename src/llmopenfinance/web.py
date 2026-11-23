@@ -28,8 +28,10 @@ lock until the sync has finished and the read-only store has been reopened (:fun
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import secrets
+import socket
 import threading
 from collections.abc import Callable, Generator
 from contextlib import closing
@@ -44,6 +46,7 @@ from werkzeug.wrappers import Response as BaseResponse
 from llmopenfinance import messages_pt
 from llmopenfinance.agent import AssistantError, ToolStatus
 from llmopenfinance.chat import TextDelta
+from llmopenfinance.constants import DEFAULT_WEB_THREADS
 from llmopenfinance.i18n import get_language, t
 from llmopenfinance.session import BuildOptions, ChatSession, Factories, Notice, parse_command, run_command, run_sync
 from llmopenfinance.web_page import render_page
@@ -52,12 +55,23 @@ from llmopenfinance.web_stream import StreamEvent, json_error, release_pending, 
 if TYPE_CHECKING:
     from llmopenfinance.sync import ItemResult
 
-__all__ = ["COOKIE_NAME", "MAX_CONTENT_LENGTH", "WebContext", "create_app", "host_allowed", "new_token", "ui_strings"]
+__all__ = [
+    "COOKIE_NAME",
+    "MAX_CONTENT_LENGTH",
+    "WebContext",
+    "create_app",
+    "host_allowed",
+    "new_token",
+    "serve",
+    "ui_strings",
+]
 
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "finassist_token"
 MAX_CONTENT_LENGTH = 64 * 1024
+# Waitress buffers a whole request body before the app can answer 413 (its default limit is 1 GiB): cap it just above.
+_WAITRESS_BODY_LIMIT = MAX_CONTENT_LENGTH + 4096
 _LOOPBACK_NAMES = ("localhost", "127.0.0.1", "[::1]")
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
 _DEFAULT_HTTP_PORT = 80
@@ -547,3 +561,52 @@ def create_app(ctx: WebContext) -> Flask:
         return stream_under_lock(ctx.lock, partial(_sync_events, ctx, force=force))
 
     return app
+
+
+def _ensure_bindable(host: str, port: int) -> None:
+    """Fail with ``OSError`` when something already listens on ``host:port``.
+
+    Waitress sets ``SO_REUSEADDR`` before it binds. On Windows that lets a second process share a port that is already
+    in use, so a second server would start silently and some requests would reach the wrong one. A probe socket without
+    the option is refused there. On other systems ``SO_REUSEADDR`` only tolerates lingering connections, so the probe
+    sets it as Waitress does and is refused only by a live listener. The ``OSError`` raised for an address in use, not
+    permitted or not resolvable (``socket.gaierror`` is one) is left to propagate.
+
+    Args:
+        host: Address to bind.
+        port: TCP port.
+    """
+    family, kind, proto, _name, address = socket.getaddrinfo(
+        host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+    )[0]
+    with socket.socket(family, kind, proto) as probe:
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(address)
+
+
+def serve(ctx: WebContext, *, threads: int = DEFAULT_WEB_THREADS, serve_fn: Callable[..., Any] | None = None) -> None:
+    """Serve the app with Waitress until interrupted.
+
+    Waitress is imported here, so importing this module never needs it. Access logging stays off (Waitress logs none
+    unless wrapped), so the ``/?token=`` URL never reaches a log, and no proxy headers are trusted.
+    An address that cannot be bound (in use, no permission, bad host) surfaces as an ``OSError``. With Waitress itself
+    the address is probed first (:func:`_ensure_bindable`), because Waitress would not notice a port in use on Windows.
+
+    Args:
+        ctx: Shared web context; its host and port are the bind address.
+        threads: Worker threads; at least 2 keeps ``/api/state`` answerable while a chat or sync stream holds one.
+        serve_fn: Replacement for ``waitress.serve`` (the test seam).
+    """
+    if serve_fn is None:
+        import waitress
+
+        _ensure_bindable(ctx.host, ctx.port)
+        serve_fn = waitress.serve
+    serve_fn(
+        create_app(ctx),
+        host=ctx.host,
+        port=ctx.port,
+        threads=threads,
+        max_request_body_size=_WAITRESS_BODY_LIMIT,
+    )

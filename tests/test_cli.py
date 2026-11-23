@@ -1,11 +1,13 @@
 """End-to-end CLI tests with Typer's CliRunner, a fake Pluggy client and a scripted LLM."""
 
 import io
+import logging
 import os
 import re
 import subprocess  # ruff: ignore[suspicious-subprocess-import] — the startup guard needs a fresh interpreter
 import sys
 from collections.abc import Callable
+from typing import Any, ClassVar
 
 import pytest
 from rich.console import Console
@@ -1117,3 +1119,296 @@ def test_render_answer_delegates_to_ui(monkeypatch):
     monkeypatch.setattr(ui, "render_answer", lambda events: seen.append(events) or False)
     assert cli._render_answer(Assistant(), "q") is False
     assert seen == [["q"]]
+
+
+# ---------------------------------------------------------------------------
+# ``server`` command (nothing binds a socket or opens a browser)
+# ---------------------------------------------------------------------------
+
+TOKEN_URL = re.compile(r"http://[\w.\[\]:]+/\?token=([\w-]+)")
+
+
+class Served:
+    """Records the ``waitress.serve`` call; ``error`` is raised instead of serving."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, dict[str, Any]]] = []
+        self.error: BaseException | None = None
+
+    def __call__(self, app, **kwargs):
+        self.calls.append((app, kwargs))
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.fixture
+def served(monkeypatch) -> Served:
+    import waitress
+
+    recorder = Served()
+    monkeypatch.setattr(waitress, "serve", recorder)
+    return recorder
+
+
+@pytest.fixture
+def browser(monkeypatch) -> list[str]:
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "_open_browser", lambda url, *_a, **_k: opened.append(url) or True)
+    return opened
+
+
+@pytest.fixture
+def server_env(env, served, browser):
+    seed(env)
+    use_llm(env, FakeLLM([]))
+    return env
+
+
+def server_token(output: str) -> str:
+    match = TOKEN_URL.search(output)
+    assert match, output
+    return match.group(1)
+
+
+def test_server_starts_and_prints_tokened_url(server_env, served, browser):
+    result = run(server_env, "server", "--no-sync", "--port", "8123", "--threads", "3")
+    assert result.exit_code == 0, result.output
+    token = server_token(result.output)
+    assert f"http://127.0.0.1:8123/?token={token}" in result.output
+    assert result.output.count(token) == 1  # printed once
+    assert len(served.calls) == 1
+    app, kwargs = served.calls[0]
+    assert app.name == "llmopenfinance.web"
+    assert (kwargs["host"], kwargs["port"], kwargs["threads"]) == ("127.0.0.1", 8123, 3)
+    assert kwargs["max_request_body_size"] > 64 * 1024
+    assert browser == [f"http://127.0.0.1:8123/?token={token}"]
+    assert f"{t('ui.banner.provider')}:" not in result.output  # no banner for ``server`` (only ``chat`` shows it)
+
+
+def test_server_defaults(server_env, served):
+    assert run(server_env, "server", "--no-sync").exit_code == 0
+    kwargs = served.calls[0][1]
+    assert (kwargs["host"], kwargs["port"], kwargs["threads"]) == ("127.0.0.1", 8000, 4)
+
+
+def test_server_no_browser_flag(server_env, browser):
+    assert run(server_env, "server", "--no-sync", "--no-browser").exit_code == 0
+    assert browser == []
+    assert run(server_env, "server", "--no-sync").exit_code == 0
+    assert len(browser) == 1
+
+
+def test_server_ignores_browser_failures(server_env, served, monkeypatch):
+    def broken(*_a, **_k):
+        raise OSError("no browser")
+
+    monkeypatch.setattr(cli, "_open_browser", broken)
+    assert run(server_env, "server", "--no-sync").exit_code == 0
+    assert len(served.calls) == 1
+    monkeypatch.setattr(cli, "_open_browser", lambda *_a, **_k: False)
+    assert run(server_env, "server", "--no-sync").exit_code == 0
+
+
+def test_server_missing_extra(server_env, served, monkeypatch):
+    run(server_env, "items", "add", ITEM_ID, "--no-verify")
+    monkeypatch.setitem(sys.modules, "flask", None)
+    monkeypatch.delitem(sys.modules, "llmopenfinance.web", raising=False)
+    result = run(server_env, "server")  # sync is on: it must not even start
+    assert result.exit_code == 1
+    assert "--extra web" in result.output
+    assert "Traceback" not in result.output
+    assert server_env["pluggy"].calls == []
+    assert served.calls == []
+
+
+def test_server_llm_unreachable_exits_1(env, served, browser):
+    seed(env)
+    use_llm(env, FakeLLM([], provider="ollama", reachable=False))
+    result = run(env, "--provider", "ollama", "server", "--no-sync")
+    assert result.exit_code == 1
+    assert "ollama serve" in result.output
+    assert served.calls == []
+    assert browser == []
+
+
+def test_server_llm_misconfigured_exits_1(env, served):
+    seed(env)
+
+    def boom(*_a, **_k):
+        raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+
+    env["monkeypatch"].setattr(cli, "_llm", boom)
+    result = run(env, "server", "--no-sync")
+    assert result.exit_code == 1
+    assert "ANTHROPIC_API_KEY" in result.output
+    assert served.calls == []
+
+
+def test_server_port_in_use_is_clean(server_env, served):
+    served.error = OSError("Address already in use")
+    result = run(server_env, "server", "--no-sync", "--port", "8123")
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    lines = [line for line in result.output.splitlines() if "Address already in use" in line]
+    assert len(lines) == 1
+    assert "127.0.0.1" in lines[0]
+    assert "8123" in lines[0]
+
+
+def test_server_non_loopback_warning(server_env, served):
+    result = run(server_env, "server", "--no-sync", "--host", "0.0.0.0")
+    assert result.exit_code == 0, result.output
+    assert "HTTP" in result.output
+    assert "somente o token" in result.output
+    assert f"http://127.0.0.1:8000/?token={server_token(result.output)}" in result.output
+    assert "0.0.0.0" not in next(line for line in result.output.splitlines() if "?token=" in line)
+    assert served.calls[0][1]["host"] == "0.0.0.0"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_server_loopback_host_has_no_warning(server_env, host):
+    result = run(server_env, "server", "--no-sync", "--host", host)
+    assert result.exit_code == 0, result.output
+    assert "HTTP" not in result.output
+
+
+def test_server_specific_non_loopback_host_warns_without_wildcard_text(server_env):
+    result = run(server_env, "server", "--no-sync", "--host", "192.168.1.20")
+    assert "http://192.168.1.20:8000/?token=" in result.output
+    assert "HTTP" in result.output
+    assert "somente o token" not in result.output
+
+
+def test_server_ipv6_hosts_are_bracketed_in_the_url(server_env):
+    assert "http://[::1]:8000/?token=" in run(server_env, "server", "--no-sync", "--host", "::1").output
+    wildcard = run(server_env, "server", "--no-sync", "--host", "::").output
+    assert "http://127.0.0.1:8000/?token=" in wildcard
+
+
+def test_server_syncs_before_serving(server_env, served):
+    run(server_env, "items", "add", ITEM_ID, "--no-verify")
+    result = run(server_env, "server", "--no-browser")
+    assert result.exit_code == 0, result.output
+    assert "Sincronização concluída" in result.output
+    assert "authenticate" in server_env["pluggy"].calls
+    assert len(served.calls) == 1
+    server_env["pluggy"].calls.clear()
+    assert run(server_env, "server", "--no-sync", "--no-browser").exit_code == 0
+    assert server_env["pluggy"].calls == []
+
+
+def test_server_warns_about_empty_store(env, served):
+    use_llm(env, FakeLLM([]))
+    result = run(env, "server", "--no-sync", "--no-browser")
+    assert result.exit_code == 0, result.output
+    assert "Ainda não há transações" in result.output
+
+
+def test_server_en_messages(server_env, served, use_language: UseLanguage):
+    use_language("en")
+    result = run(server_env, "server", "--no-sync", "--host", "0.0.0.0", "--port", "8123")
+    assert result.exit_code == 0, result.output
+    assert "plain HTTP" in result.output
+    assert "Open in your browser" in result.output
+    served.error = OSError("Address already in use")
+    failed = run(server_env, "server", "--no-sync", "--port", "8123")
+    assert failed.exit_code == 1
+    assert "Could not listen on 127.0.0.1:8123" in failed.output
+
+
+def test_server_en_missing_extra(server_env, monkeypatch, use_language: UseLanguage):
+    use_language("en")
+    monkeypatch.setitem(sys.modules, "flask", None)
+    monkeypatch.delitem(sys.modules, "llmopenfinance.web", raising=False)
+    result = run(server_env, "server")
+    assert result.exit_code == 1
+    assert "uv sync --extra web" in result.output
+
+
+def test_server_context_failure_is_clean(server_env, served, monkeypatch):
+    from llmopenfinance import web
+
+    def boom(**_kwargs):
+        raise RuntimeError("store-exploded")
+
+    monkeypatch.setattr(web, "WebContext", boom)
+    result = run(server_env, "server", "--no-sync")
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert len([line for line in result.output.splitlines() if "store-exploded" in line]) == 1
+    assert served.calls == []
+
+
+def test_server_token_not_logged(server_env, served, caplog):
+    run(server_env, "items", "add", ITEM_ID, "--no-verify")
+    caplog.set_level(logging.DEBUG)
+    result = run(server_env, "server", "--no-browser")  # the sync logs too
+    token = server_token(result.output)
+    assert caplog.records  # not vacuous: something was logged at DEBUG
+    assert token not in caplog.text
+    for record in caplog.records:
+        assert token not in record.getMessage()
+        assert token not in str(record.args)
+
+
+def test_server_token_differs_per_launch(server_env):
+    first = server_token(run(server_env, "server", "--no-sync").output)
+    assert first != server_token(run(server_env, "server", "--no-sync").output)
+
+
+@pytest.mark.parametrize("args", [["--port", "0"], ["--port", "70000"], ["--threads", "1"], ["--port", "x"]])
+def test_server_options_validation(server_env, served, args):
+    result = run(server_env, "server", "--no-sync", *args)
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+    assert served.calls == []
+
+
+def test_server_in_help_chat_panel():
+    panels = help_panels(runner.invoke(cli.app, ["--help"]).output)
+    assert re.search(r"^│ server\s", panels[t("cli.panel.chat")], flags=re.MULTILINE)
+    help_text = runner.invoke(cli.app, ["server", "--help"]).output
+    for option in ("--host", "--port", "--threads", "--no-browser", "--no-sync", "--think", "--no-sql"):
+        assert option in help_text
+
+
+def test_server_keyboard_interrupt_exits_0(server_env, served):
+    served.error = KeyboardInterrupt()
+    result = run(server_env, "server", "--no-sync")
+    assert result.exit_code == 0
+    assert "Até logo!" in result.output
+    assert "Traceback" not in result.output
+
+
+class SpySession(cli._ChatSession):
+    instances: ClassVar[list["SpySession"]] = []
+
+    def __init__(self, open_store):
+        super().__init__(open_store)
+        self.closed = 0
+        SpySession.instances.append(self)
+
+    def close(self):
+        self.closed += 1
+        super().close()
+
+
+@pytest.mark.parametrize("path", ["ok", "interrupt", "port", "context", "llm"])
+def test_server_closes_session(server_env, served, monkeypatch, path):
+    from llmopenfinance import web
+
+    def boom(**_kwargs):
+        raise RuntimeError("store-exploded")
+
+    SpySession.instances.clear()
+    monkeypatch.setattr(cli, "_ChatSession", SpySession)
+    if path == "interrupt":
+        served.error = KeyboardInterrupt()
+    elif path == "port":
+        served.error = OSError("in use")
+    elif path == "context":
+        monkeypatch.setattr(web, "WebContext", boom)
+    elif path == "llm":
+        use_llm(server_env, FakeLLM([], reachable=False))
+    run(server_env, "server", "--no-sync")
+    assert [session.closed for session in SpySession.instances] == [1]

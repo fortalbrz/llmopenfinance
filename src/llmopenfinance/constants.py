@@ -39,6 +39,11 @@ ENV_ANTHROPIC_KEYS = ("ANTHROPIC_API_KEY", "CLAUDE_TOKEN")
 DEFAULT_LANGUAGE = "pt-BR"
 SUPPORTED_LANGUAGES = ("pt-BR", "en")
 
+# --- Web chat (``finassist server``) -----------------------------------------
+DEFAULT_WEB_HOST = "127.0.0.1"
+DEFAULT_WEB_PORT = 8000
+DEFAULT_WEB_THREADS = 4
+
 # --- Local storage -----------------------------------------------------------
 DEFAULT_DB_PATH = Path.home() / ".llmopenfinance" / "finance.duckdb"
 

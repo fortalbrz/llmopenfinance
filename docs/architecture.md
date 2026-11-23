@@ -5,6 +5,9 @@ src/llmopenfinance/
 ├── __main__.py    Typer CLI. _state callback, _handle_* logic, thin commands (pattern from apexmusicmachine); prints only through ui.py
 ├── ui.py          Rich console helpers: themed notices, banner, tables, live Markdown answer; plain text off a terminal
 ├── session.py     Chat/sync core shared by every front end, with no printing: ChatSession, build_assistant, chat commands, run_sync
+├── web.py         Optional local web chat (Flask app + Waitress serve): Host check, token cookie, JSON/NDJSON routes, one lock
+├── web_stream.py  NDJSON streaming helpers: lock held for the whole stream, released exactly once, on disconnect too
+├── web_page.py    The chat page: one inline HTML/CSS/JS string, nonce'd for the Content-Security-Policy
 ├── i18n.py        Process language (LLMOPENFINANCE_LANG), t(key, **vars), language-aware money and dates
 ├── messages_pt.py pt-BR message catalog (default; fallback for a key missing elsewhere)
 ├── messages_en.py English message catalog (same keys and placeholders as pt-BR)
@@ -52,6 +55,32 @@ src/llmopenfinance/
   ID column folds, the others stay on one line, and `ui` falls back to plain lines when they would not fit.
 - **Typer help** is built at import (`help=`, panel titles and epilog come from the catalog), which is why the language
   must be known before the app is created and why there is no `--lang` option.
+
+## Web front end
+
+`finassist server` (the `web` extra: Flask and Waitress) is a second front end over the same `session` core, so it adds
+no chat or sync logic of its own.
+
+- **Optional and lazy.** `__main__` imports `web` only inside `server`, after the language guard; when Flask or
+  Waitress is missing, `server` prints the install line and returns 1 before any sync or LLM check.
+  `web.serve` imports Waitress lazily too, and `llmopenfinance.web` is the only module that imports Flask.
+- **One assistant, one read-only store, one lock.** `WebContext` bundles them with the token, host, port and a
+  `threading.Lock`. Everything that touches the session, the assistant or DuckDB runs while holding the lock; a request
+  that finds it held gets 409 and is never queued. `GET /api/state` serves cached status only, so it answers while busy
+  (which is why `--threads` is at least 2).
+- **Streaming as NDJSON.** `POST /api/chat` and `POST /api/sync` answer with one JSON object per line
+  (`text`, `tool`, `notice`, `progress`, `error`, always ending in `done`). `web_stream` holds the lock for the whole
+  stream and gives it back once, when the stream ends, fails, is aborted by a client that disconnects or is closed without
+  being read. A sync cannot be cancelled, so a disconnected sync keeps the lock until it has finished and the read-only
+  store is reopened; the history of an aborted answer is rolled back by the assistant.
+- **Request guards, in order:** `Host` header (400), token cookie compared in constant time (401), JSON content type
+  (415) and a 64 KiB body limit (413). Waitress is also capped just above that body limit, because it buffers a whole
+  body before the app can answer. The token is printed once by `server`, never logged; access logging is off.
+- **The page** (`web_page`) is a single inline string with no external resources. It takes its texts from the `web.ui.*`
+  catalog keys (served in `/api/state`), escapes all model and data text before display, and re-reads `/api/state` after a
+  sync to redraw the conversation.
+- **The conversation is in memory only.** `WebContext.transcript` keeps the text turns so a reload or a second tab can show
+  them; it is never written to disk or to logs.
 
 ## Key decisions
 
@@ -106,4 +135,5 @@ The project follows the non-stop batch policy from AGENTS.md:
 | `test_chat.py` | Ollama with a fake client; Claude with recorded SSE (thinking, tool use, `max_tokens`, error events, retries) |
 | `test_agent.py`, `test_sync.py`, `test_connect.py`, `test_cli.py` | Tool loop and rollback, resilient sync, loopback server, CLI end to end (plain output off a terminal; tables, banner and styled prompt on a forced terminal) |
 | `test_i18n.py`, `test_catalog.py` | Language resolution, `t()` fallbacks, date and money formats; catalog parity, placeholders and source-scan guards |
+| `test_web.py` | The Flask app with a test client: Host, token and content-type guards, state, commands, streamed chat and sync, lock release on disconnect, `web.serve` limits |
 | `test_session.py`, `test_ui.py` | Notices and commands without a terminal; `ui` in plain, styled and `NO_COLOR` modes, verbatim dynamic text, escape stripping, tables at 80 and 120 columns |
